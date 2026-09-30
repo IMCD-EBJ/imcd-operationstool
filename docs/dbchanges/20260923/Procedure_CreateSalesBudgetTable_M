@@ -1,0 +1,153 @@
+USE [MOSAIC]
+GO
+
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = N'OperationsTool')
+    EXEC(N'CREATE SCHEMA [OperationsTool]');
+GO
+
+/****************************************************************************************************
+PROCEDURE NAME : [OperationsTool].[CreateSalesBudgetTable]
+VERSION        : v1.0
+CREATION DATE  : 2026-09-23
+
+DESCRIPTION:
+----------------------------------------------------------------------------------------------
+ETL procedure that rebuilds [OPERATIONSTOOL].[dbo].[SalesBudgetTable] as a slice of
+[MOSAIC].[dbo].[SalesBudgetTable].
+
+The slice keeps sales rows for Iberia and Maghreb from 2026-01-01 onward:
+    REPORTINGDATE >= '2026-01-01'
+    AND COMPANY_COUNTRYCODE IN ('ES', 'PT', 'MA')
+    AND BUDGETCODE IN ('SALES')
+    AND INCOMETYPE IN ('Sales')
+    AND SALESGROUP = 'Third Party'
+
+Those filters stay on the source. The destination keeps only the columns the
+Transport Performance dashboard reads:
+    PICKNUMBER, ORDER_NUMBER, PROMISEDDELIVERYDATE,
+    ACCOUNT_NAME, ACCOUNT_OWNER_NAME,
+    SHIP_TO_COUNTRY_CODE, SHIP_TO_POSTAL_CODE,
+    PRODUCT_NAME, PRODUCT_FULL_SEGMENTS_NUMBER.
+
+TARGET TABLES:
+----------------------------------------------------------------------------------------------
+• [MOSAIC].[dbo].[SalesBudgetTable]            → Source.
+• [OPERATIONSTOOL].[dbo].[SalesBudgetTable]    → Destination slice.
+• [MOSAIC].[Monitor].[LogEtl]                  → ETL execution log.
+
+PARAMETERS:
+----------------------------------------------------------------------------------------------
+(No input parameters)
+
+Internal variables:
+   @DATABASE     NVARCHAR(50)  = 'OPERATIONSTOOL'
+   @SCHEMANAME   NVARCHAR(50)  = 'dbo'
+   @TABLENAME    SYSNAME       = 'SalesBudgetTable'
+   @PERCW        DECIMAL(14,2) = 5.00   → Weekly process weight.
+   @PERCE        DECIMAL(14,2) = 10.00  → Standard process weight.
+
+FUNCTIONAL STEPS:
+----------------------------------------------------------------------------------------------
+1. Start the process and register it in [MANAGEMENT].[LogDataInsert], returning @PROCESS_ID.
+2. Load the filtered source rows into [#TEMP_SALESBUDGET].
+3. When the temp table has rows, drop and recreate [OPERATIONSTOOL].[dbo].[SalesBudgetTable].
+4. Create the pick-number index and update statistics.
+5. Register the result with [MANAGEMENT].[LogDataUpdate].
+
+OUTPUT / LOGGING:
+----------------------------------------------------------------------------------------------
+- [OPERATIONSTOOL].[dbo].[SalesBudgetTable] replaced with the current slice.
+- Execution logged in [MOSAIC].[Monitor].[LogEtl].
+
+ERROR HANDLING:
+----------------------------------------------------------------------------------------------
+- TRY/CATCH.
+- On error, ERR_MESSAGE, ERR_LINE, ERR_PROCEDURE, ERR_NUMBER, ERR_SEVERITY and ERR_STATE
+  are written to [Monitor].[LogEtl] and the procedure returns.
+
+NOTES:
+----------------------------------------------------------------------------------------------
+- Idempotent: each successful run replaces the destination table.
+- The destination is left unchanged when the filtered source returns no rows.
+****************************************************************************************************/
+
+CREATE OR ALTER PROCEDURE [OperationsTool].[CreateSalesBudgetTable]
+AS
+BEGIN
+
+SET NOCOUNT ON
+
+DECLARE @PROCESS_ID int
+DECLARE @RECORDS int
+DECLARE @RECORDS_OLD INT
+DECLARE @DATABASE NVARCHAR(50) = 'OPERATIONSTOOL'
+DECLARE @SCHEMANAME NVARCHAR(50) = 'dbo'
+DECLARE @TABLENAME SYSNAME = 'SalesBudgetTable'
+DECLARE @PERCW DECIMAL(14,2) = 5.00
+DECLARE @PERCE DECIMAL(14,2) = 10.00
+
+EXEC [MOSAIC].[MANAGEMENT].[LogDataInsert] @DATABASE, @SCHEMANAME, @TABLENAME, @RECORDS_OLD OUT, @PROCESS_ID OUT
+
+IF OBJECT_ID(N'tempdb..#TEMP_SALESBUDGET') IS NOT NULL
+BEGIN
+    DROP TABLE #TEMP_SALESBUDGET
+END
+
+BEGIN TRY
+
+    SELECT
+      [PICKNUMBER]
+      ,[ORDER_NUMBER]
+      ,[PROMISEDDELIVERYDATE]
+      ,[ACCOUNT_NAME]
+      ,[ACCOUNT_OWNER_NAME]
+      ,[SHIP_TO_COUNTRY_CODE]
+      ,[SHIP_TO_POSTAL_CODE]
+      ,[PRODUCT_NAME]
+      ,[PRODUCT_FULL_SEGMENTS_NUMBER]
+    INTO #TEMP_SALESBUDGET
+    FROM [MOSAIC].[dbo].[SalesBudgetTable]
+    WHERE REPORTINGDATE >= '2026-01-01'
+      AND [COMPANY_COUNTRYCODE] IN ('ES', 'PT', 'MA')
+      AND [BUDGETCODE] IN ('SALES')
+      AND INCOMETYPE IN ('Sales')
+      AND SALESGROUP = 'Third Party'
+
+    IF ((SELECT COUNT(*) FROM #TEMP_SALESBUDGET) > 0)
+    BEGIN
+        DROP TABLE IF EXISTS [OPERATIONSTOOL].[dbo].[SalesBudgetTable];
+
+        SELECT *
+        INTO [OPERATIONSTOOL].[dbo].[SalesBudgetTable]
+        FROM #TEMP_SALESBUDGET
+
+        CREATE NONCLUSTERED INDEX IX_SalesBudgetTable_PickNumber
+        ON [OPERATIONSTOOL].[dbo].[SalesBudgetTable] (PICKNUMBER);
+
+        UPDATE STATISTICS [OPERATIONSTOOL].[dbo].[SalesBudgetTable] WITH FULLSCAN;
+    END
+
+END TRY
+BEGIN CATCH
+    UPDATE [Monitor].[LogEtl]
+        SET END_DATE = CURRENT_TIMESTAMP,
+            ERR_MESSAGE = (SELECT ERROR_MESSAGE()),
+            ERR_LINE = (SELECT ERROR_LINE()),
+            ERR_PROCEDURE = (SELECT ERROR_PROCEDURE()),
+            ERR_NUMBER = (SELECT ERROR_NUMBER()),
+            ERR_SEVERITY = (SELECT ERROR_SEVERITY()),
+            ERR_STATE = (SELECT ERROR_STATE()),
+            RECORDS = 0
+        WHERE PROCESS_ID = @PROCESS_ID
+    RETURN
+END CATCH
+
+EXEC [MOSAIC].[MANAGEMENT].[LogDataUpdate] @DATABASE, @SCHEMANAME, @TABLENAME, @RECORDS_OLD, @PROCESS_ID, @PERCW, @PERCE
+
+END
+GO

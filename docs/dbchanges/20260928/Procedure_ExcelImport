@@ -1,0 +1,226 @@
+USE [OPERATIONSTOOL]
+GO
+
+/*
+    Catalog and staging objects for imcd-platform-lib ExcelImportService.
+    Java calls only these procedures. Table creation and row inserts live here.
+*/
+
+IF OBJECT_ID(N'dbo.ReportCatalogImport', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ReportCatalogImport
+    (
+        RC_ReportId    INT IDENTITY(1,1) NOT NULL,
+        RC_ReportName  NVARCHAR(200)     NOT NULL,
+        RC_SheetData   INT               NOT NULL,
+        RC_TableName   NVARCHAR(128)     NOT NULL,
+        RC_StoreName   NVARCHAR(128)     NULL,
+        RC_ReportType  NVARCHAR(100)     NULL,
+        CONSTRAINT PK_ReportCatalogImport PRIMARY KEY CLUSTERED (RC_ReportId)
+    );
+END
+GO
+
+IF OBJECT_ID(N'dbo.ObjectExcelFieldsImport', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ObjectExcelFieldsImport
+    (
+        ObjectId         INT           NOT NULL,
+        ColumnId         INT           NOT NULL,
+        ColumnLabel      NVARCHAR(200) NOT NULL,
+        ColumnType       NVARCHAR(50)  NOT NULL,
+        ColumnExpression NVARCHAR(200) NOT NULL,
+        CONSTRAINT PK_ObjectExcelFieldsImport PRIMARY KEY CLUSTERED (ObjectId, ColumnId)
+    );
+END
+GO
+
+IF OBJECT_ID(N'dbo.LogReportImportExecution', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.LogReportImportExecution
+    (
+        ID               INT IDENTITY(1,1) NOT NULL,
+        RC_ReportId      NVARCHAR(100)     NULL,
+        TableName        NVARCHAR(255)     NOT NULL,
+        UserLogged       NVARCHAR(100)     NULL,
+        ResultProcedure  NVARCHAR(MAX)     NULL,
+        CreatedOn        DATETIME          NOT NULL CONSTRAINT DF_LogReportImportExecution_CreatedOn DEFAULT (GETDATE()),
+        CONSTRAINT PK_LogReportImportExecution PRIMARY KEY CLUSTERED (ID)
+    );
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[Import_Reports_Consult]
+    @budget INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        RC_ReportId,
+        RC_ReportName,
+        RC_SheetData,
+        RC_TableName,
+        RC_StoreName,
+        RC_ReportType
+    FROM dbo.ReportCatalogImport
+    WHERE @budget = 0
+    ORDER BY RC_ReportName;
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[Report_Catalog_Import_Consult]
+    @reportId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        RC_ReportId,
+        RC_ReportName,
+        RC_SheetData,
+        RC_TableName,
+        RC_StoreName,
+        RC_ReportType
+    FROM dbo.ReportCatalogImport
+    WHERE RC_ReportId = @reportId;
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[ObjectExcelFieldsImport_Consult]
+    @reportId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        ColumnId,
+        ColumnLabel,
+        ColumnType,
+        ColumnExpression
+    FROM dbo.ObjectExcelFieldsImport
+    WHERE ObjectId = @reportId
+    ORDER BY ColumnId;
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[Import_StagingTable_Create]
+    @tableName   sysname,
+    @columnsJson nvarchar(max)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @tableName IS NULL
+        OR @tableName = N''
+        OR @tableName LIKE N'%[^A-Za-z0-9_]%'
+        THROW 50001, 'Invalid table name.', 1;
+
+    IF OBJECT_ID(N'dbo.' + @tableName, N'U') IS NOT NULL
+        THROW 50003, 'Staging table already exists.', 1;
+
+    IF EXISTS (
+        SELECT 1
+        FROM OPENJSON(@columnsJson)
+        WHERE REPLACE(REPLACE(JSON_VALUE([value], '$.expression'), N'[', N''), N']', N'') = N''
+           OR REPLACE(REPLACE(JSON_VALUE([value], '$.expression'), N'[', N''), N']', N'') LIKE N'%[^A-Za-z0-9_ ]%'
+    )
+        THROW 50005, 'Invalid column name.', 1;
+
+    DECLARE @defs nvarchar(max);
+
+    SELECT @defs = STRING_AGG(def, N',') WITHIN GROUP (ORDER BY ord)
+    FROM (
+        SELECT
+            CONVERT(int, [key]) AS ord,
+            QUOTENAME(REPLACE(REPLACE(JSON_VALUE([value], '$.expression'), N'[', N''), N']', N''))
+            + CASE LOWER(JSON_VALUE([value], '$.type'))
+                WHEN N'decimal' THEN N' DECIMAL(18,2)'
+                WHEN N'date' THEN N' DATETIME'
+                ELSE N' VARCHAR(255)'
+              END AS def
+        FROM OPENJSON(@columnsJson)
+    ) d;
+
+    IF @defs IS NULL OR @defs = N''
+        THROW 50004, 'No columns supplied.', 1;
+
+    DECLARE @sql nvarchar(max) =
+        N'CREATE TABLE dbo.' + QUOTENAME(@tableName) + N' (' + @defs + N')';
+
+    EXEC sys.sp_executesql @sql;
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[Import_StagingRows_Insert]
+    @tableName sysname,
+    @rowsJson  nvarchar(max)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @tableName IS NULL
+        OR @tableName = N''
+        OR @tableName LIKE N'%[^A-Za-z0-9_]%'
+        THROW 50001, 'Invalid table name.', 1;
+
+    IF @rowsJson IS NULL OR LTRIM(RTRIM(@rowsJson)) IN (N'', N'[]')
+        RETURN;
+
+    IF OBJECT_ID(N'dbo.' + @tableName, N'U') IS NULL
+        THROW 50002, 'Staging table does not exist.', 1;
+
+    DECLARE @values nvarchar(max);
+
+    ;WITH rows AS (
+        SELECT CONVERT(int, r.[key]) AS row_idx, r.[value] AS row_json
+        FROM OPENJSON(@rowsJson) r
+    ),
+    cells AS (
+        SELECT
+            rows.row_idx,
+            CONVERT(int, c.[key]) AS col_idx,
+            CASE
+                WHEN c.[type] = 0 THEN N'NULL'
+                WHEN c.[type] = 2 THEN c.[value]
+                ELSE N'''' + REPLACE(c.[value], N'''', N'''''') + N''''
+            END AS sql_value
+        FROM rows
+        CROSS APPLY OPENJSON(rows.row_json) c
+    ),
+    grouped AS (
+        SELECT
+            row_idx,
+            N'(' + STRING_AGG(sql_value, N',') WITHIN GROUP (ORDER BY col_idx) + N')' AS row_sql
+        FROM cells
+        GROUP BY row_idx
+    )
+    SELECT @values = STRING_AGG(row_sql, N',') WITHIN GROUP (ORDER BY row_idx)
+    FROM grouped;
+
+    IF @values IS NULL
+        RETURN;
+
+    DECLARE @sql nvarchar(max) =
+        N'INSERT INTO dbo.' + QUOTENAME(@tableName) + N' VALUES ' + @values;
+
+    EXEC sys.sp_executesql @sql;
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[Report_Import_Execution_Insert]
+    @RC_ReportId     nvarchar(100),
+    @TableName       nvarchar(255),
+    @UserLogged      nvarchar(100),
+    @ResultProcedure nvarchar(max)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    INSERT INTO dbo.LogReportImportExecution
+        (RC_ReportId, TableName, UserLogged, ResultProcedure)
+    OUTPUT INSERTED.ID
+    VALUES
+        (@RC_ReportId, @TableName, @UserLogged, @ResultProcedure);
+END
+GO

@@ -1,0 +1,61 @@
+<nav id="sidebar" class="imcd-rail expanded" aria-label="Operations Tool">
+    <div class="brand-extra" aria-hidden="true">
+        <img class="logo-extra" src="imgs/LOGO_APPS.png" alt="IMCD">
+    </div>
+    <button id="btnToggleSidebar" class="toggle" type="button" title="Collapse / Expand sidebar">
+        <i class="fas fa-grip-lines"></i>
+    </button>
+    <button id="btnHomeIndex" class="toggle-info" type="button" title="Home">
+        <i class="fas fa-home"></i>
+    </button>
+    <div class="rail-scroll">
+        <ul class="list-unstyled components">
+            <li>
+                <a href="import.html" class="level1-link">
+                    <span class="icon"><i class="fas fa-file-import"></i></span>
+                    <span class="label">Import</span>
+                </a>
+            </li>
+            <li>
+                <a href="dashboard.html" class="level1-link">
+                    <span class="icon"><i class="fas fa-tachometer-alt"></i></span>
+                    <span class="label">Dashboard</span>
+                </a>
+            </li>
+        </ul>
+    </div>
+</nav>
+<style>
+    :root { --imcd-toplogo-h: 140px; }
+    #sidebar.imcd-rail .brand-extra {
+        height: var(--imcd-toplogo-h);
+        padding: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
+    }
+    #sidebar.imcd-rail .brand-extra .logo-extra {
+        max-width: 100%;
+        max-height: 100%;
+        width: auto;
+        height: auto;
+        display: block;
+        object-fit: contain;
+    }
+</style>
+<script>
+    (function () {
+        if (window.initSidebarBehavior) window.initSidebarBehavior();
+        const toggle = document.getElementById("btnToggleSidebar");
+        if (toggle) {
+            toggle.onclick = function (event) {
+                event.preventDefault();
+                if (window.toggleSidebar) window.toggleSidebar();
+            };
+        }
+        $(document).on("click", "#btnHomeIndex", function () {
+            window.location.href = "import.html";
+        });
+    })();
+</script>

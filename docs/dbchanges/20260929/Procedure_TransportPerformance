@@ -1,0 +1,1011 @@
+USE [OPERATIONSTOOL]
+GO
+
+/*
+    Transport Performance Dashboard.
+
+    One row per IMCD pick (latest carrier import of that number).
+    A carrier value such as 03344463-OUT matches pick 3344463.
+    Fecha Entrega is Carrier_Imported_Data.Delivery_Date, from the carrier file.
+    The period filter and the monthly chart use the promised delivery date.
+    The pick is late when that date is after the later of the promised
+    delivery date and the earliest viable date, or when the order has a
+    Cases row with CASE_ATTRIBUTED = 'Delivery Timing'.
+
+    Earliest viable date = warehouse arrival date + TransitTime.Transit_Days.
+    Warehouse arrival date is the earliest EDI_DATETIME for the order where
+    SOURCE = 'Inbound Messages'. A time after 13:30 moves that date to the
+    next working day (Saturday and Sunday roll to Monday). Holidays are not
+    applied in this version.
+
+    The on-time target is CFG_CarrierTargetPercentage in
+    dbo.ConfigurationOperationsTool.
+
+    Procedures:
+      AccountOwners_Consult, Zones_Consult, Product_Search, Account_Search
+        Lookup lists for the filter bar.
+      Consult
+        Dashboard. Three result sets from one filtered set:
+        1 summary row, one row per month, then the current page of picks.
+        @pickNumber and @orderNumber are the last parameters so an older
+        caller that does not pass them still lines up.
+      Unmatched_Consult
+        Carrier picks that do not match a sales-budget pick. Two result sets:
+        the count, then the page. @pickNumber is the last parameter.
+      Pick_Consult
+        One pick for the details page. Five result sets: header, sales lines,
+        every carrier row, EDI messages, Delivery Timing cases.
+*/
+
+IF OBJECT_ID(N'dbo.ConfigurationOperationsTool', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ConfigurationOperationsTool
+    (
+        CFG_DirectoryExport          nvarchar(1000) NULL,
+        CFG_DirectoryImport          nvarchar(1000) NULL,
+        CFG_CarrierTargetPercentage  decimal(5, 2)  NOT NULL
+            CONSTRAINT DF_ConfigurationOperationsTool_Target DEFAULT (98)
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM dbo.ConfigurationOperationsTool)
+BEGIN
+    INSERT INTO dbo.ConfigurationOperationsTool
+        (CFG_DirectoryExport, CFG_DirectoryImport, CFG_CarrierTargetPercentage)
+    VALUES
+        (NULL, N'/OT10_DOCS/IMPORTS', 98);
+END
+GO
+
+UPDATE dbo.ConfigurationOperationsTool
+SET CFG_DirectoryImport = N'/OT10_DOCS/IMPORTS'
+WHERE CFG_DirectoryImport IS NULL
+   OR LTRIM(RTRIM(CFG_DirectoryImport)) = N'';
+GO
+
+IF OBJECT_ID(N'dbo.TransitTime', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.TransitTime
+    (
+        Carrier_Zone nvarchar(10) NOT NULL,
+        Transit_Days int          NOT NULL,
+        CONSTRAINT PK_TransitTime PRIMARY KEY CLUSTERED (Carrier_Zone)
+    );
+END
+GO
+
+DROP PROCEDURE IF EXISTS [dbo].[TransportPerformance_Filters_Consult];
+GO
+
+/* Distinct account owners for the dashboard filter. */
+CREATE OR ALTER PROCEDURE [dbo].[TransportPerformance_AccountOwners_Consult]
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT DISTINCT
+        LTRIM(RTRIM(ACCOUNT_OWNER_NAME)) AS AccountOwner
+    FROM dbo.SalesBudgetTable
+    WHERE ACCOUNT_OWNER_NAME IS NOT NULL
+      AND LTRIM(RTRIM(ACCOUNT_OWNER_NAME)) <> N''
+    ORDER BY AccountOwner;
+END
+GO
+
+/* Distinct carrier zones (country + postal prefix) stored in TransitTime. */
+CREATE OR ALTER PROCEDURE [dbo].[TransportPerformance_Zones_Consult]
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT DISTINCT
+        LTRIM(RTRIM(Carrier_Zone)) AS CarrierZone
+    FROM dbo.TransitTime
+    WHERE Carrier_Zone IS NOT NULL
+      AND LTRIM(RTRIM(Carrier_Zone)) <> N''
+    ORDER BY CarrierZone;
+END
+GO
+
+/* Typeahead. Matches product name or segment. Empty when the term is shorter than 2 characters. */
+CREATE OR ALTER PROCEDURE [dbo].[TransportPerformance_Product_Search]
+    @term nvarchar(200)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @term = NULLIF(LTRIM(RTRIM(@term)), N'');
+
+    IF @term IS NULL OR LEN(@term) < 2
+    BEGIN
+        SELECT
+            CAST(NULL AS nvarchar(200)) AS SegmentNumber,
+            CAST(NULL AS nvarchar(400)) AS ProductName
+        WHERE 1 = 0;
+        RETURN;
+    END
+
+    DECLARE @like nvarchar(300) =
+        N'%' + REPLACE(REPLACE(REPLACE(@term, N'[', N'[[]'), N'%', N'[%]'), N'_', N'[_]') + N'%';
+
+    SELECT DISTINCT TOP (25)
+        LTRIM(RTRIM(CONVERT(nvarchar(200), PRODUCT_FULL_SEGMENTS_NUMBER))) AS SegmentNumber,
+        LTRIM(RTRIM(PRODUCT_NAME)) AS ProductName
+    FROM dbo.SalesBudgetTable
+    WHERE CONVERT(nvarchar(200), PRODUCT_FULL_SEGMENTS_NUMBER) LIKE @like
+       OR PRODUCT_NAME LIKE @like
+    ORDER BY ProductName, SegmentNumber;
+END
+GO
+
+/* Typeahead for account name. Empty when the term is shorter than 2 characters. */
+CREATE OR ALTER PROCEDURE [dbo].[TransportPerformance_Account_Search]
+    @term nvarchar(200)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @term = NULLIF(LTRIM(RTRIM(@term)), N'');
+
+    IF @term IS NULL OR LEN(@term) < 2
+    BEGIN
+        SELECT CAST(NULL AS nvarchar(400)) AS AccountName WHERE 1 = 0;
+        RETURN;
+    END
+
+    DECLARE @like nvarchar(300) =
+        N'%' + REPLACE(REPLACE(REPLACE(@term, N'[', N'[[]'), N'%', N'[%]'), N'_', N'[_]') + N'%';
+
+    SELECT DISTINCT TOP (25)
+        LTRIM(RTRIM(ACCOUNT_NAME)) AS AccountName
+    FROM dbo.SalesBudgetTable
+    WHERE ACCOUNT_NAME LIKE @like
+      AND LTRIM(RTRIM(ACCOUNT_NAME)) <> N''
+    ORDER BY AccountName;
+END
+GO
+
+/*
+    Dashboard consult.
+    Builds one row per pick in #filtered, then returns that set three times:
+    summary, monthly on-time percent, and the requested page.
+*/
+CREATE OR ALTER PROCEDURE [dbo].[TransportPerformance_Consult]
+    @fromDate       date           = NULL,
+    @toDate         date           = NULL,
+    @productName    nvarchar(400)  = NULL,
+    @productSegment nvarchar(200)  = NULL,
+    @accountOwner   nvarchar(400)  = NULL,
+    @accountName    nvarchar(400)  = NULL,
+    @carrierZone    nvarchar(10)   = NULL,
+    @result         nvarchar(20)   = NULL,
+    @sortColumn     nvarchar(40)   = NULL,
+    @sortDirection  nvarchar(4)    = NULL,
+    @page           int            = 1,
+    @pageSize       int            = 10,
+    @pickNumber     nvarchar(50)   = NULL,
+    @orderNumber    nvarchar(50)   = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @productName = NULLIF(LTRIM(RTRIM(@productName)), N'');
+    SET @productSegment = NULLIF(LTRIM(RTRIM(@productSegment)), N'');
+    SET @accountOwner = NULLIF(LTRIM(RTRIM(@accountOwner)), N'');
+    SET @accountName = NULLIF(LTRIM(RTRIM(@accountName)), N'');
+    SET @carrierZone = NULLIF(UPPER(LTRIM(RTRIM(@carrierZone))), N'');
+    SET @result = NULLIF(LTRIM(RTRIM(@result)), N'');
+    SET @pickNumber = NULLIF(LTRIM(RTRIM(@pickNumber)), N'');
+    SET @orderNumber = NULLIF(LTRIM(RTRIM(@orderNumber)), N'');
+
+    -- Contains-match. [ ] % _ are escaped so a typed value is not treated as a LIKE pattern.
+
+    DECLARE @pickLike nvarchar(200) = NULL;
+    DECLARE @orderLike nvarchar(200) = NULL;
+    IF @pickNumber IS NOT NULL
+        SET @pickLike = N'%' + REPLACE(REPLACE(REPLACE(@pickNumber, N'[', N'[[]'), N'%', N'[%]'), N'_', N'[_]') + N'%';
+    IF @orderNumber IS NOT NULL
+        SET @orderLike = N'%' + REPLACE(REPLACE(REPLACE(@orderNumber, N'[', N'[[]'), N'%', N'[%]'), N'_', N'[_]') + N'%';
+
+    IF @result IS NULL OR @result = N'All'
+        SET @result = NULL;
+
+    SET @sortColumn = NULLIF(LTRIM(RTRIM(@sortColumn)), N'');
+    SET @sortDirection = UPPER(NULLIF(LTRIM(RTRIM(@sortDirection)), N''));
+
+    IF @sortColumn IS NULL
+       OR @sortColumn NOT IN (
+            N'pick', N'order', N'product', N'accountName', N'accountOwner',
+            N'promisedDate', N'transmitDate', N'earliestViableDate', N'fechaEntrega',
+            N'timingNcr', N'daysLate', N'result'
+       )
+    BEGIN
+        SET @sortColumn = N'fechaEntrega';
+        IF @sortDirection NOT IN (N'ASC', N'DESC')
+            SET @sortDirection = N'DESC';
+    END
+    ELSE IF @sortDirection NOT IN (N'ASC', N'DESC')
+        SET @sortDirection = N'ASC';
+
+    IF @page IS NULL OR @page < 1
+        SET @page = 1;
+
+    IF @pageSize IS NULL OR @pageSize < 0
+        SET @pageSize = 10;
+
+    -- Chart target line. 98 until ConfigurationOperationsTool has a value.
+    DECLARE @target decimal(5, 2) = 98;
+
+    SELECT TOP (1)
+        @target = CFG_CarrierTargetPercentage
+    FROM dbo.ConfigurationOperationsTool
+    WHERE CFG_CarrierTargetPercentage IS NOT NULL;
+
+    -- PickInt is the leading digits of the carrier pick: 03344463-OUT -> 3344463.
+    -- rn = 1 is the latest import of that pick.
+    SELECT
+        pick.PickNumber,
+        pick.PickInt,
+        c.Delivery_Date AS DeliveryDate,
+        ROW_NUMBER() OVER (
+            PARTITION BY pick.PickInt
+            ORDER BY c.Import_Id DESC, c.ID DESC
+        ) AS rn
+    INTO #carrier
+    FROM dbo.Carrier_Imported_Data AS c
+    CROSS APPLY (
+        SELECT
+            LTRIM(RTRIM(c.Pick_Number)) AS PickNumber,
+            TRY_CONVERT(int, NULLIF(
+                LEFT(
+                    LTRIM(RTRIM(c.Pick_Number)),
+                    PATINDEX(N'%[^0-9]%', LTRIM(RTRIM(c.Pick_Number)) + N'X') - 1
+                ),
+                N''
+            )) AS PickInt
+    ) AS pick
+    WHERE pick.PickNumber <> N''
+      AND pick.PickInt IS NOT NULL;
+
+    -- One carrier row per pick: the newest import.
+    SELECT PickNumber, PickInt, DeliveryDate
+    INTO #latest
+    FROM #carrier
+    WHERE rn = 1;
+
+    -- One sales row per pick, used for account, ship-to, promised date, and the EDI/case link.
+    -- A pick can have several lines; the latest promised date wins.
+    SELECT
+        PICKNUMBER,
+        ORDER_NUMBER,
+        ACCOUNT_NAME,
+        ACCOUNT_OWNER_NAME,
+        SHIP_TO_POSTAL_CODE,
+        SHIP_TO_COUNTRY_CODE,
+        PROMISEDDELIVERYDATE
+    INTO #representative
+    FROM (
+        SELECT
+            s.PICKNUMBER,
+            s.ORDER_NUMBER,
+            s.ACCOUNT_NAME,
+            s.ACCOUNT_OWNER_NAME,
+            s.SHIP_TO_POSTAL_CODE,
+            s.SHIP_TO_COUNTRY_CODE,
+            s.PROMISEDDELIVERYDATE,
+            ROW_NUMBER() OVER (
+                PARTITION BY s.PICKNUMBER
+                ORDER BY s.PROMISEDDELIVERYDATE DESC, s.ORDER_NUMBER, s.PRODUCT_NAME
+            ) AS rn
+        FROM dbo.SalesBudgetTable AS s
+        INNER JOIN #latest AS l ON l.PickInt = s.PICKNUMBER
+    ) ranked
+    WHERE rn = 1;
+
+    -- Every product on the pick, shown as "Name (segment)" and joined with commas.
+    SELECT
+        PICKNUMBER,
+        STRING_AGG(ProductName, ', ') WITHIN GROUP (ORDER BY ProductName) AS ProductName
+    INTO #products
+    FROM (
+        SELECT DISTINCT
+            s.PICKNUMBER,
+            CASE
+                WHEN parts.ProductName IS NULL THEN parts.SegmentNumber
+                WHEN parts.SegmentNumber IS NULL THEN parts.ProductName
+                ELSE parts.ProductName + N' (' + parts.SegmentNumber + N')'
+            END AS ProductName
+        FROM dbo.SalesBudgetTable AS s
+        INNER JOIN #latest AS l ON l.PickInt = s.PICKNUMBER
+        CROSS APPLY (
+            SELECT
+                NULLIF(LTRIM(RTRIM(s.PRODUCT_NAME)), N'') AS ProductName,
+                NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(200), s.PRODUCT_FULL_SEGMENTS_NUMBER))), N'') AS SegmentNumber
+        ) AS parts
+    ) AS names
+    WHERE ProductName IS NOT NULL
+    GROUP BY PICKNUMBER;
+
+    -- Earliest inbound EDI time for the representative order. That time is the transmit date.
+    SELECT
+        TRY_CONVERT(bigint, e.ORDERNUMBER) AS OrderNumber,
+        MIN(e.EDI_DATETIME) AS TransmitDateTime
+    INTO #edi
+    FROM dbo.EDI AS e
+    INNER JOIN #representative AS rep
+        ON TRY_CONVERT(bigint, rep.ORDER_NUMBER) = TRY_CONVERT(bigint, e.ORDERNUMBER)
+    WHERE e.SOURCE = N'Inbound Messages'
+      AND e.EDI_DATETIME IS NOT NULL
+    GROUP BY TRY_CONVERT(bigint, e.ORDERNUMBER);
+
+    -- Orders that have a Delivery Timing case. Presence alone marks the pick Late.
+    SELECT DISTINCT
+        TRY_CONVERT(bigint, c.SALESORDERNUMBER) AS OrderNumber
+    INTO #ncr
+    FROM dbo.Cases AS c
+    INNER JOIN #representative AS rep
+        ON TRY_CONVERT(bigint, rep.ORDER_NUMBER) = TRY_CONVERT(bigint, c.SALESORDERNUMBER)
+    WHERE c.CASE_ATTRIBUTED = N'Delivery Timing';
+
+    -- One output row per pick. Picks with no sales-budget row are excluded here
+    -- and listed by Unmatched_Consult instead.
+    -- Carrier zone is country code + the first two postal digits.
+    -- A 4-digit Spanish postal code is padded to 5 before those two digits are taken.
+    SELECT
+        prod.ProductName,
+        l.PickNumber,
+        l.PickInt,
+        CONVERT(nvarchar(50), rep.ORDER_NUMBER) AS OrderNumber,
+        NULLIF(LTRIM(RTRIM(rep.ACCOUNT_NAME)), N'') AS AccountName,
+        NULLIF(LTRIM(RTRIM(rep.ACCOUNT_OWNER_NAME)), N'') AS AccountOwner,
+        zone.CarrierZone,
+        CAST(rep.PROMISEDDELIVERYDATE AS date) AS PromisedDate,
+        edi.TransmitDateTime,
+        dates.EarliestViableDate,
+        l.DeliveryDate AS FechaEntrega,
+        CAST(CASE WHEN ncr.OrderNumber IS NULL THEN 0 ELSE 1 END AS bit) AS TimingNcr,
+        outcome.DaysLate,
+        outcome.NcrOnly,
+        outcome.Result
+    INTO #filtered
+    FROM #latest AS l
+    INNER JOIN #representative AS rep ON rep.PICKNUMBER = l.PickInt
+    LEFT JOIN #products AS prod ON prod.PICKNUMBER = l.PickInt
+    LEFT JOIN #edi AS edi ON edi.OrderNumber = TRY_CONVERT(bigint, rep.ORDER_NUMBER)
+    LEFT JOIN #ncr AS ncr ON ncr.OrderNumber = TRY_CONVERT(bigint, rep.ORDER_NUMBER)
+    CROSS APPLY (
+        SELECT
+            UPPER(LTRIM(RTRIM(ISNULL(rep.SHIP_TO_COUNTRY_CODE, N'')))) AS CountryCode,
+            LTRIM(RTRIM(ISNULL(rep.SHIP_TO_POSTAL_CODE, N''))) AS PostalCode
+    ) AS ship
+    CROSS APPLY (
+        SELECT ship.CountryCode + LEFT(
+            CASE
+                WHEN ship.CountryCode = N'ES'
+                     AND LEN(ship.PostalCode) = 4
+                     AND ship.PostalCode NOT LIKE N'%[^0-9]%'
+                    THEN N'0' + ship.PostalCode
+                ELSE ship.PostalCode
+            END,
+            2
+        ) AS CarrierZone
+    ) AS zone
+    LEFT JOIN dbo.TransitTime AS tt ON tt.Carrier_Zone = zone.CarrierZone
+    -- Warehouse arrival from the earliest inbound EDI time.
+    -- After 13:30 the goods are treated as arriving the next working day.
+    -- 1900-01-01 is a Monday, so DATEDIFF(...) % 7 is 0 = Monday ... 5 = Saturday, 6 = Sunday.
+    -- The check is on the day after the transmit date:
+    --   Friday after 13:30   -> Monday (+3)
+    --   Saturday after 13:30 -> Monday (+2)
+    --   any other day after 13:30 -> the next calendar day (+1)
+    --   at or before 13:30 -> the transmit date itself, even if it is a weekend
+    -- Earliest viable date below is this arrival date plus Transit_Days as calendar days.
+    -- Those extra days do not skip Saturday, Sunday, or holidays.
+    CROSS APPLY (
+        SELECT
+            CASE
+                WHEN edi.TransmitDateTime IS NULL THEN CAST(NULL AS date)
+                WHEN CAST(edi.TransmitDateTime AS time) > CAST(N'13:30:00' AS time)
+                     AND DATEDIFF(day, CONVERT(date, '19000101', 112), DATEADD(day, 1, CAST(edi.TransmitDateTime AS date))) % 7 = 5
+                    THEN DATEADD(day, 3, CAST(edi.TransmitDateTime AS date))
+                WHEN CAST(edi.TransmitDateTime AS time) > CAST(N'13:30:00' AS time)
+                     AND DATEDIFF(day, CONVERT(date, '19000101', 112), DATEADD(day, 1, CAST(edi.TransmitDateTime AS date))) % 7 = 6
+                    THEN DATEADD(day, 2, CAST(edi.TransmitDateTime AS date))
+                WHEN CAST(edi.TransmitDateTime AS time) > CAST(N'13:30:00' AS time)
+                    THEN DATEADD(day, 1, CAST(edi.TransmitDateTime AS date))
+                ELSE CAST(edi.TransmitDateTime AS date)
+            END AS WarehouseArrival
+    ) AS arrival
+    CROSS APPLY (
+        SELECT
+            CASE
+                WHEN arrival.WarehouseArrival IS NULL OR tt.Transit_Days IS NULL THEN CAST(NULL AS date)
+                ELSE DATEADD(day, tt.Transit_Days, arrival.WarehouseArrival)
+            END AS EarliestViableDate
+    ) AS dates
+    -- The date the carrier is measured against: the later of promised and earliest viable.
+    CROSS APPLY (
+        SELECT
+            CASE
+                WHEN CAST(rep.PROMISEDDELIVERYDATE AS date) IS NULL THEN dates.EarliestViableDate
+                WHEN dates.EarliestViableDate IS NULL THEN CAST(rep.PROMISEDDELIVERYDATE AS date)
+                WHEN CAST(rep.PROMISEDDELIVERYDATE AS date) >= dates.EarliestViableDate
+                    THEN CAST(rep.PROMISEDDELIVERYDATE AS date)
+                ELSE dates.EarliestViableDate
+            END AS ComparisonDate
+    ) AS cmp
+    -- Late when Fecha Entrega is after the comparison date, or a Delivery Timing case exists.
+    -- NcrOnly is a Timing case whose Fecha Entrega is not actually after the comparison date.
+    -- Days late is 0 when the pick is on time. It stays null when a date needed to compare is missing.
+    CROSS APPLY (
+        SELECT
+            CASE
+                WHEN ncr.OrderNumber IS NOT NULL OR late.IsLate = 1 THEN N'Late'
+                WHEN l.DeliveryDate IS NOT NULL AND cmp.ComparisonDate IS NOT NULL THEN N'On Time'
+            END AS Result,
+            CASE
+                WHEN late.IsLate = 1 THEN DATEDIFF(day, cmp.ComparisonDate, CAST(l.DeliveryDate AS date))
+                WHEN ncr.OrderNumber IS NULL AND (l.DeliveryDate IS NULL OR cmp.ComparisonDate IS NULL) THEN NULL
+                ELSE 0
+            END AS DaysLate,
+            CAST(CASE WHEN ncr.OrderNumber IS NOT NULL AND late.IsLate = 0 THEN 1 ELSE 0 END AS bit) AS NcrOnly
+        FROM (
+            SELECT
+                CASE
+                    WHEN l.DeliveryDate IS NOT NULL
+                         AND cmp.ComparisonDate IS NOT NULL
+                         AND CAST(l.DeliveryDate AS date) > cmp.ComparisonDate
+                        THEN 1
+                    ELSE 0
+                END AS IsLate
+        ) AS late
+    ) AS outcome
+    -- Filters apply to the promised date, the representative account, the zone,
+    -- any sales line of the pick for product, and contains-match for pick and order.
+    WHERE (@fromDate IS NULL OR (CAST(rep.PROMISEDDELIVERYDATE AS date) IS NOT NULL AND CAST(rep.PROMISEDDELIVERYDATE AS date) >= @fromDate))
+      AND (@toDate IS NULL OR (CAST(rep.PROMISEDDELIVERYDATE AS date) IS NOT NULL AND CAST(rep.PROMISEDDELIVERYDATE AS date) <= @toDate))
+      AND (@accountOwner IS NULL OR NULLIF(LTRIM(RTRIM(rep.ACCOUNT_OWNER_NAME)), N'') = @accountOwner)
+      AND (@accountName IS NULL OR NULLIF(LTRIM(RTRIM(rep.ACCOUNT_NAME)), N'') = @accountName)
+      AND (@carrierZone IS NULL OR zone.CarrierZone = @carrierZone)
+      AND (
+            (@productName IS NULL AND @productSegment IS NULL)
+            OR EXISTS (
+                SELECT 1
+                FROM dbo.SalesBudgetTable AS s
+                WHERE s.PICKNUMBER = l.PickInt
+                  AND (@productName IS NULL OR LTRIM(RTRIM(s.PRODUCT_NAME)) = @productName)
+                  AND (
+                        @productSegment IS NULL
+                        OR LTRIM(RTRIM(CONVERT(nvarchar(200), s.PRODUCT_FULL_SEGMENTS_NUMBER))) = @productSegment
+                  )
+            )
+      )
+      AND (@result IS NULL OR outcome.Result = @result)
+      AND (
+            @pickLike IS NULL
+            OR l.PickNumber LIKE @pickLike
+            OR CONVERT(nvarchar(20), l.PickInt) LIKE @pickLike
+      )
+      AND (
+            @orderLike IS NULL
+            OR CONVERT(nvarchar(50), rep.ORDER_NUMBER) LIKE @orderLike
+      );
+
+    DECLARE @total int;
+    DECLARE @onTime int;
+    DECLARE @late int;
+    DECLARE @timingNcr int;
+
+    -- Result set 1. On-time and late percentages use only rows that have a Result.
+    SELECT
+        @total = COUNT(*),
+        @onTime = ISNULL(SUM(CASE WHEN Result = N'On Time' THEN 1 ELSE 0 END), 0),
+        @late = ISNULL(SUM(CASE WHEN Result = N'Late' THEN 1 ELSE 0 END), 0),
+        @timingNcr = ISNULL(SUM(CASE WHEN TimingNcr = 1 THEN 1 ELSE 0 END), 0)
+    FROM #filtered;
+
+    SELECT
+        @total AS TotalCount,
+        @onTime AS OnTimeCount,
+        CAST(CASE
+            WHEN @onTime + @late = 0 THEN NULL
+            ELSE 100.0 * @onTime / (@onTime + @late)
+        END AS decimal(9, 2)) AS OnTimePercent,
+        @late AS LateCount,
+        CAST(CASE
+            WHEN @onTime + @late = 0 THEN NULL
+            ELSE 100.0 * @late / (@onTime + @late)
+        END AS decimal(9, 2)) AS LatePercent,
+        @timingNcr AS TimingNcrCount,
+        @target AS TargetPercentage;
+
+    -- Result set 2. One point per month in the promised-date range, including months with no rows.
+    DECLARE @rangeStart date = @fromDate;
+    DECLARE @rangeEnd date = @toDate;
+
+    IF @rangeStart IS NULL
+        SELECT @rangeStart = MIN(PromisedDate) FROM #filtered WHERE PromisedDate IS NOT NULL;
+
+    IF @rangeEnd IS NULL
+        SELECT @rangeEnd = MAX(PromisedDate) FROM #filtered WHERE PromisedDate IS NOT NULL;
+
+    IF @rangeStart IS NULL OR @rangeEnd IS NULL OR @rangeStart > @rangeEnd
+    BEGIN
+        SELECT
+            CAST(NULL AS nvarchar(20)) AS MonthLabel,
+            CAST(NULL AS int) AS MonthYear,
+            CAST(NULL AS decimal(9, 2)) AS OnTimePercent
+        WHERE 1 = 0;
+    END
+    ELSE
+    BEGIN
+        ;WITH months AS (
+            SELECT CAST(DATEFROMPARTS(YEAR(@rangeStart), MONTH(@rangeStart), 1) AS date) AS MonthStart
+            UNION ALL
+            SELECT DATEADD(month, 1, MonthStart)
+            FROM months
+            WHERE MonthStart < DATEFROMPARTS(YEAR(@rangeEnd), MONTH(@rangeEnd), 1)
+        )
+        SELECT
+            FORMAT(m.MonthStart, 'MMM yyyy', 'en-US') AS MonthLabel,
+            YEAR(m.MonthStart) AS MonthYear,
+            CAST(CASE
+                WHEN ISNULL(bucket.ClassifiedCount, 0) = 0 THEN NULL
+                ELSE 100.0 * bucket.OnTimeCount / bucket.ClassifiedCount
+            END AS decimal(9, 2)) AS OnTimePercent
+        FROM months AS m
+        LEFT JOIN (
+            SELECT
+                DATEFROMPARTS(YEAR(PromisedDate), MONTH(PromisedDate), 1) AS MonthStart,
+                SUM(CASE WHEN Result = N'On Time' THEN 1 ELSE 0 END) AS OnTimeCount,
+                SUM(CASE WHEN Result IS NOT NULL THEN 1 ELSE 0 END) AS ClassifiedCount
+            FROM #filtered
+            WHERE PromisedDate IS NOT NULL
+            GROUP BY DATEFROMPARTS(YEAR(PromisedDate), MONTH(PromisedDate), 1)
+        ) AS bucket ON bucket.MonthStart = m.MonthStart
+        ORDER BY m.MonthStart
+        OPTION (MAXRECURSION 120);
+    END
+
+    -- Result set 3. pageSize 0 returns every filtered row (Excel export).
+    -- Null dates sort last. PickNumber is the final tie-break.
+    DECLARE @offset int = CASE WHEN @pageSize = 0 THEN 0 ELSE (@page - 1) * @pageSize END;
+    DECLARE @fetch int = CASE WHEN @pageSize = 0 THEN 2147483647 ELSE @pageSize END;
+
+    SELECT
+        ProductName AS Product,
+        PickNumber,
+        OrderNumber,
+        AccountName,
+        AccountOwner,
+        PromisedDate,
+        TransmitDateTime,
+        EarliestViableDate,
+        FechaEntrega,
+        TimingNcr,
+        DaysLate,
+        NcrOnly,
+        Result,
+        @total AS TotalCount
+    FROM #filtered
+    ORDER BY
+        CASE
+            WHEN @sortColumn = N'promisedDate' AND PromisedDate IS NULL THEN 1
+            WHEN @sortColumn = N'transmitDate' AND TransmitDateTime IS NULL THEN 1
+            WHEN @sortColumn = N'earliestViableDate' AND EarliestViableDate IS NULL THEN 1
+            WHEN @sortColumn = N'fechaEntrega' AND FechaEntrega IS NULL THEN 1
+            WHEN @sortColumn = N'daysLate' AND DaysLate IS NULL THEN 1
+            ELSE 0
+        END,
+        CASE WHEN @sortColumn = N'pick' AND @sortDirection = N'ASC' THEN PickInt END ASC,
+        CASE WHEN @sortColumn = N'pick' AND @sortDirection = N'ASC' THEN PickNumber END ASC,
+        CASE WHEN @sortColumn = N'pick' AND @sortDirection = N'DESC' THEN PickInt END DESC,
+        CASE WHEN @sortColumn = N'pick' AND @sortDirection = N'DESC' THEN PickNumber END DESC,
+        CASE WHEN @sortColumn = N'order' AND @sortDirection = N'ASC' THEN TRY_CONVERT(bigint, OrderNumber) END ASC,
+        CASE WHEN @sortColumn = N'order' AND @sortDirection = N'ASC' THEN OrderNumber END ASC,
+        CASE WHEN @sortColumn = N'order' AND @sortDirection = N'DESC' THEN TRY_CONVERT(bigint, OrderNumber) END DESC,
+        CASE WHEN @sortColumn = N'order' AND @sortDirection = N'DESC' THEN OrderNumber END DESC,
+        CASE WHEN @sortColumn = N'product' AND @sortDirection = N'ASC' THEN ProductName END ASC,
+        CASE WHEN @sortColumn = N'product' AND @sortDirection = N'DESC' THEN ProductName END DESC,
+        CASE WHEN @sortColumn = N'accountName' AND @sortDirection = N'ASC' THEN AccountName END ASC,
+        CASE WHEN @sortColumn = N'accountName' AND @sortDirection = N'DESC' THEN AccountName END DESC,
+        CASE WHEN @sortColumn = N'accountOwner' AND @sortDirection = N'ASC' THEN AccountOwner END ASC,
+        CASE WHEN @sortColumn = N'accountOwner' AND @sortDirection = N'DESC' THEN AccountOwner END DESC,
+        CASE WHEN @sortColumn = N'promisedDate' AND @sortDirection = N'ASC' THEN PromisedDate END ASC,
+        CASE WHEN @sortColumn = N'promisedDate' AND @sortDirection = N'DESC' THEN PromisedDate END DESC,
+        CASE WHEN @sortColumn = N'transmitDate' AND @sortDirection = N'ASC' THEN TransmitDateTime END ASC,
+        CASE WHEN @sortColumn = N'transmitDate' AND @sortDirection = N'DESC' THEN TransmitDateTime END DESC,
+        CASE WHEN @sortColumn = N'earliestViableDate' AND @sortDirection = N'ASC' THEN EarliestViableDate END ASC,
+        CASE WHEN @sortColumn = N'earliestViableDate' AND @sortDirection = N'DESC' THEN EarliestViableDate END DESC,
+        CASE WHEN @sortColumn = N'fechaEntrega' AND @sortDirection = N'ASC' THEN FechaEntrega END ASC,
+        CASE WHEN @sortColumn = N'fechaEntrega' AND @sortDirection = N'DESC' THEN FechaEntrega END DESC,
+        CASE WHEN @sortColumn = N'timingNcr' AND @sortDirection = N'ASC' THEN TimingNcr END ASC,
+        CASE WHEN @sortColumn = N'timingNcr' AND @sortDirection = N'DESC' THEN TimingNcr END DESC,
+        CASE WHEN @sortColumn = N'daysLate' AND @sortDirection = N'ASC' THEN DaysLate END ASC,
+        CASE WHEN @sortColumn = N'daysLate' AND @sortDirection = N'DESC' THEN DaysLate END DESC,
+        CASE WHEN @sortColumn = N'result' AND @sortDirection = N'ASC' THEN Result END ASC,
+        CASE WHEN @sortColumn = N'result' AND @sortDirection = N'DESC' THEN Result END DESC,
+        PickNumber
+    OFFSET @offset ROWS FETCH NEXT @fetch ROWS ONLY;
+END
+GO
+
+/*
+    Carrier picks with no SalesBudgetTable row for that pick number.
+    The date filter uses Fecha Entrega, not the promised date.
+    Result sets: the count, then the page.
+*/
+CREATE OR ALTER PROCEDURE [dbo].[TransportPerformance_Unmatched_Consult]
+    @fromDate   date         = NULL,
+    @toDate     date         = NULL,
+    @page       int          = 1,
+    @pageSize   int          = 10,
+    @pickNumber nvarchar(50) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @pickNumber = NULLIF(LTRIM(RTRIM(@pickNumber)), N'');
+    DECLARE @pickLike nvarchar(200) = NULL;
+    IF @pickNumber IS NOT NULL
+        SET @pickLike = N'%' + REPLACE(REPLACE(REPLACE(@pickNumber, N'[', N'[[]'), N'%', N'[%]'), N'_', N'[_]') + N'%';
+
+    IF @page IS NULL OR @page < 1
+        SET @page = 1;
+
+    IF @pageSize IS NULL OR @pageSize < 0
+        SET @pageSize = 10;
+
+    -- Same pick parsing as Consult. A blank numeric prefix stays in this list (PickInt is null).
+    SELECT
+        pick.PickNumber,
+        pick.PickInt,
+        NULLIF(LTRIM(RTRIM(c.Carrier_Code)), N'') AS CarrierCode,
+        c.Delivery_Date AS DeliveryDate,
+        NULLIF(LTRIM(RTRIM(c.Client)), N'') AS ClientName,
+        NULLIF(LTRIM(RTRIM(c.Postal_Code)), N'') AS PostalCode,
+        NULLIF(LTRIM(RTRIM(c.Country)), N'') AS Country,
+        ROW_NUMBER() OVER (
+            PARTITION BY ISNULL(CONVERT(varchar(20), pick.PickInt), pick.PickNumber)
+            ORDER BY c.Import_Id DESC, c.ID DESC
+        ) AS rn
+    INTO #carrier
+    FROM dbo.Carrier_Imported_Data AS c
+    CROSS APPLY (
+        SELECT
+            LTRIM(RTRIM(c.Pick_Number)) AS PickNumber,
+            TRY_CONVERT(int, NULLIF(
+                LEFT(
+                    LTRIM(RTRIM(c.Pick_Number)),
+                    PATINDEX(N'%[^0-9]%', LTRIM(RTRIM(c.Pick_Number)) + N'X') - 1
+                ),
+                N''
+            )) AS PickInt
+    ) AS pick
+    WHERE pick.PickNumber <> N'';
+
+    -- Latest import only, and only when that pick is absent from the sales slice.
+    SELECT *
+    INTO #unmatched
+    FROM #carrier AS c
+    WHERE c.rn = 1
+      AND (
+            c.PickInt IS NULL
+            OR NOT EXISTS (
+                SELECT 1
+                FROM dbo.SalesBudgetTable AS s
+                WHERE s.PICKNUMBER = c.PickInt
+            )
+      )
+      AND (@fromDate IS NULL OR (c.DeliveryDate IS NOT NULL AND CAST(c.DeliveryDate AS date) >= @fromDate))
+      AND (@toDate IS NULL OR (c.DeliveryDate IS NOT NULL AND CAST(c.DeliveryDate AS date) <= @toDate))
+      AND (
+            @pickLike IS NULL
+            OR c.PickNumber LIKE @pickLike
+            OR CONVERT(nvarchar(20), c.PickInt) LIKE @pickLike
+      );
+
+    DECLARE @total int = (SELECT COUNT(*) FROM #unmatched);
+    DECLARE @offset int = CASE WHEN @pageSize = 0 THEN 0 ELSE (@page - 1) * @pageSize END;
+    DECLARE @fetch int = CASE WHEN @pageSize = 0 THEN 2147483647 ELSE @pageSize END;
+
+    SELECT @total AS TotalCount;
+
+    SELECT
+        PickNumber,
+        PickInt AS SearchedNumber,
+        CarrierCode,
+        DeliveryDate AS FechaEntrega,
+        ClientName,
+        PostalCode,
+        Country
+    FROM #unmatched
+    ORDER BY
+        CASE WHEN DeliveryDate IS NULL THEN 1 ELSE 0 END,
+        DeliveryDate DESC,
+        PickNumber
+    OFFSET @offset ROWS FETCH NEXT @fetch ROWS ONLY;
+END
+GO
+
+/*
+    One pick for the details page.
+    @pick is the IMCD pick number (leading digits of the carrier pick).
+    The header uses the same arrival, transit, and late rules as Consult.
+    EDI and Delivery Timing cases follow the representative order (latest promised date on the pick).
+    Result sets, in order: header, sales lines, every carrier row, EDI messages, Delivery Timing cases.
+*/
+CREATE OR ALTER PROCEDURE [dbo].[TransportPerformance_Pick_Consult]
+    @pick int
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @pick IS NULL
+        RETURN;
+
+    -- Every imported carrier row for this pick, newest first (rn = 1).
+    SELECT
+        pick.PickNumber,
+        pick.PickInt,
+        c.ID,
+        c.Import_Id,
+        c.Import_Date,
+        NULLIF(LTRIM(RTRIM(c.Carrier_Code)), N'') AS CarrierCode,
+        NULLIF(LTRIM(RTRIM(c.Status)), N'') AS Status,
+        NULLIF(LTRIM(RTRIM(c.SKU)), N'') AS Sku,
+        c.Delivery_Date AS DeliveryDate,
+        NULLIF(LTRIM(RTRIM(c.Client)), N'') AS ClientName,
+        NULLIF(LTRIM(RTRIM(c.Address)), N'') AS Address,
+        NULLIF(LTRIM(RTRIM(c.Locality)), N'') AS Locality,
+        NULLIF(LTRIM(RTRIM(c.Postal_Code)), N'') AS PostalCode,
+        NULLIF(LTRIM(RTRIM(c.Country)), N'') AS Country,
+        ROW_NUMBER() OVER (
+            PARTITION BY pick.PickInt
+            ORDER BY c.Import_Id DESC, c.ID DESC
+        ) AS rn
+    INTO #carrier
+    FROM dbo.Carrier_Imported_Data AS c
+    CROSS APPLY (
+        SELECT
+            LTRIM(RTRIM(c.Pick_Number)) AS PickNumber,
+            TRY_CONVERT(int, NULLIF(
+                LEFT(
+                    LTRIM(RTRIM(c.Pick_Number)),
+                    PATINDEX(N'%[^0-9]%', LTRIM(RTRIM(c.Pick_Number)) + N'X') - 1
+                ),
+                N''
+            )) AS PickInt
+    ) AS pick
+    WHERE pick.PickInt = @pick;
+
+    -- All sales lines stored for this pick. The slice only keeps the columns the dashboard uses.
+    SELECT
+        PICKNUMBER,
+        ORDER_NUMBER,
+        ACCOUNT_NAME,
+        ACCOUNT_OWNER_NAME,
+        SHIP_TO_POSTAL_CODE,
+        SHIP_TO_COUNTRY_CODE,
+        PROMISEDDELIVERYDATE,
+        PRODUCT_NAME,
+        PRODUCT_FULL_SEGMENTS_NUMBER
+    INTO #lines
+    FROM dbo.SalesBudgetTable
+    WHERE PICKNUMBER = @pick;
+
+    -- The line that represents the pick on the header, same tie-break as Consult.
+    SELECT
+        ORDER_NUMBER,
+        ACCOUNT_NAME,
+        ACCOUNT_OWNER_NAME,
+        SHIP_TO_POSTAL_CODE,
+        SHIP_TO_COUNTRY_CODE,
+        PROMISEDDELIVERYDATE
+    INTO #representative
+    FROM (
+        SELECT
+            ORDER_NUMBER,
+            ACCOUNT_NAME,
+            ACCOUNT_OWNER_NAME,
+            SHIP_TO_POSTAL_CODE,
+            SHIP_TO_COUNTRY_CODE,
+            PROMISEDDELIVERYDATE,
+            PRODUCT_NAME,
+            ROW_NUMBER() OVER (
+                ORDER BY PROMISEDDELIVERYDATE DESC, ORDER_NUMBER, PRODUCT_NAME
+            ) AS rn
+        FROM #lines
+    ) ranked
+    WHERE rn = 1;
+
+    SELECT TOP (1)
+        PickNumber,
+        PickInt,
+        DeliveryDate
+    INTO #latest
+    FROM #carrier
+    WHERE rn = 1;
+
+    DECLARE @orderNumber bigint = (
+        SELECT TOP (1) TRY_CONVERT(bigint, ORDER_NUMBER) FROM #representative
+    );
+
+    SELECT MIN(e.EDI_DATETIME) AS TransmitDateTime
+    INTO #transmit
+    FROM dbo.EDI AS e
+    WHERE @orderNumber IS NOT NULL
+      AND TRY_CONVERT(bigint, e.ORDERNUMBER) = @orderNumber
+      AND e.SOURCE = N'Inbound Messages'
+      AND e.EDI_DATETIME IS NOT NULL;
+
+    DECLARE @timingNcr bit = CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM dbo.Cases AS c
+            WHERE @orderNumber IS NOT NULL
+              AND TRY_CONVERT(bigint, c.SALESORDERNUMBER) = @orderNumber
+              AND c.CASE_ATTRIBUTED = N'Delivery Timing'
+        ) THEN 1 ELSE 0
+    END;
+
+    -- Result set 1. No row when the pick has no carrier import or no sales line.
+    SELECT
+        l.PickInt,
+        l.PickNumber,
+        CONVERT(nvarchar(50), rep.ORDER_NUMBER) AS OrderNumber,
+        NULLIF(LTRIM(RTRIM(rep.ACCOUNT_NAME)), N'') AS AccountName,
+        NULLIF(LTRIM(RTRIM(rep.ACCOUNT_OWNER_NAME)), N'') AS AccountOwner,
+        UPPER(LTRIM(RTRIM(ISNULL(rep.SHIP_TO_COUNTRY_CODE, N'')))) AS ShipToCountry,
+        LTRIM(RTRIM(ISNULL(rep.SHIP_TO_POSTAL_CODE, N''))) AS ShipToPostal,
+        zone.CarrierZone,
+        tt.Transit_Days AS TransitDays,
+        CAST(rep.PROMISEDDELIVERYDATE AS date) AS PromisedDate,
+        tx.TransmitDateTime,
+        arrival.WarehouseArrival,
+        dates.EarliestViableDate,
+        l.DeliveryDate AS FechaEntrega,
+        cmp.ComparisonDate,
+        outcome.DaysLate,
+        @timingNcr AS TimingNcr,
+        outcome.Result
+    FROM #latest AS l
+    INNER JOIN #representative AS rep ON 1 = 1
+    LEFT JOIN #transmit AS tx ON 1 = 1
+    CROSS APPLY (
+        SELECT
+            UPPER(LTRIM(RTRIM(ISNULL(rep.SHIP_TO_COUNTRY_CODE, N'')))) AS CountryCode,
+            LTRIM(RTRIM(ISNULL(rep.SHIP_TO_POSTAL_CODE, N''))) AS PostalCode
+    ) AS ship
+    CROSS APPLY (
+        SELECT ship.CountryCode + LEFT(
+            CASE
+                WHEN ship.CountryCode = N'ES'
+                     AND LEN(ship.PostalCode) = 4
+                     AND ship.PostalCode NOT LIKE N'%[^0-9]%'
+                    THEN N'0' + ship.PostalCode
+                ELSE ship.PostalCode
+            END,
+            2
+        ) AS CarrierZone
+    ) AS zone
+    LEFT JOIN dbo.TransitTime AS tt ON tt.Carrier_Zone = zone.CarrierZone
+    -- Same arrival rule as TransportPerformance_Consult.
+    -- After 13:30, Friday and Saturday roll to Monday. Other days move forward one day.
+    -- At or before 13:30 the transmit date is kept. Transit days are calendar days.
+    CROSS APPLY (
+        SELECT
+            CASE
+                WHEN tx.TransmitDateTime IS NULL THEN CAST(NULL AS date)
+                WHEN CAST(tx.TransmitDateTime AS time) > CAST(N'13:30:00' AS time)
+                     AND DATEDIFF(day, CONVERT(date, '19000101', 112), DATEADD(day, 1, CAST(tx.TransmitDateTime AS date))) % 7 = 5
+                    THEN DATEADD(day, 3, CAST(tx.TransmitDateTime AS date))
+                WHEN CAST(tx.TransmitDateTime AS time) > CAST(N'13:30:00' AS time)
+                     AND DATEDIFF(day, CONVERT(date, '19000101', 112), DATEADD(day, 1, CAST(tx.TransmitDateTime AS date))) % 7 = 6
+                    THEN DATEADD(day, 2, CAST(tx.TransmitDateTime AS date))
+                WHEN CAST(tx.TransmitDateTime AS time) > CAST(N'13:30:00' AS time)
+                    THEN DATEADD(day, 1, CAST(tx.TransmitDateTime AS date))
+                ELSE CAST(tx.TransmitDateTime AS date)
+            END AS WarehouseArrival
+    ) AS arrival
+    CROSS APPLY (
+        SELECT
+            CASE
+                WHEN arrival.WarehouseArrival IS NULL OR tt.Transit_Days IS NULL THEN CAST(NULL AS date)
+                ELSE DATEADD(day, tt.Transit_Days, arrival.WarehouseArrival)
+            END AS EarliestViableDate
+    ) AS dates
+    -- The date the carrier is measured against: the later of promised and earliest viable.
+    CROSS APPLY (
+        SELECT
+            CASE
+                WHEN CAST(rep.PROMISEDDELIVERYDATE AS date) IS NULL THEN dates.EarliestViableDate
+                WHEN dates.EarliestViableDate IS NULL THEN CAST(rep.PROMISEDDELIVERYDATE AS date)
+                WHEN CAST(rep.PROMISEDDELIVERYDATE AS date) >= dates.EarliestViableDate
+                    THEN CAST(rep.PROMISEDDELIVERYDATE AS date)
+                ELSE dates.EarliestViableDate
+            END AS ComparisonDate
+    ) AS cmp
+    -- Late when Fecha Entrega is after the comparison date, or a Delivery Timing case exists.
+    -- Days late is 0 when the pick is on time. It stays null when a date needed to compare is missing.
+    CROSS APPLY (
+        SELECT
+            CASE
+                WHEN @timingNcr = 1 OR late.IsLate = 1 THEN N'Late'
+                WHEN l.DeliveryDate IS NOT NULL AND cmp.ComparisonDate IS NOT NULL THEN N'On Time'
+            END AS Result,
+            CASE
+                WHEN late.IsLate = 1 THEN DATEDIFF(day, cmp.ComparisonDate, CAST(l.DeliveryDate AS date))
+                WHEN @timingNcr = 0 AND (l.DeliveryDate IS NULL OR cmp.ComparisonDate IS NULL) THEN NULL
+                ELSE 0
+            END AS DaysLate
+        FROM (
+            SELECT
+                CASE
+                    WHEN l.DeliveryDate IS NOT NULL
+                         AND cmp.ComparisonDate IS NOT NULL
+                         AND CAST(l.DeliveryDate AS date) > cmp.ComparisonDate
+                        THEN 1
+                    ELSE 0
+                END AS IsLate
+        ) AS late
+    ) AS outcome;
+
+    -- Result set 2. One row per sales line.
+    SELECT
+        NULLIF(LTRIM(RTRIM(PRODUCT_NAME)), N'') AS ProductName,
+        NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(200), PRODUCT_FULL_SEGMENTS_NUMBER))), N'') AS SegmentNumber,
+        CONVERT(nvarchar(50), ORDER_NUMBER) AS OrderNumber,
+        CAST(PROMISEDDELIVERYDATE AS date) AS PromisedDate
+    FROM #lines
+    ORDER BY ProductName, SegmentNumber, OrderNumber;
+
+    -- Result set 3. Every carrier import of this pick, not only the latest.
+    SELECT
+        Import_Id AS ImportId,
+        Import_Date AS ImportDate,
+        CarrierCode,
+        Status,
+        Sku,
+        DeliveryDate AS FechaEntrega,
+        ClientName,
+        Address,
+        Locality,
+        PostalCode,
+        Country
+    FROM #carrier
+    ORDER BY Import_Id DESC, ID DESC;
+
+    -- Result set 4. All EDI messages for the representative order, inbound and otherwise.
+    SELECT
+        e.EDI_DATETIME AS EdiDateTime,
+        NULLIF(LTRIM(RTRIM(e.SOURCE)), N'') AS Source,
+        CAST(e.REPORTINGDATE AS date) AS ReportingDate,
+        NULLIF(LTRIM(RTRIM(e.COMPANY_COUNTRYCODE)), N'') AS CountryCode,
+        NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(200), e.RECORD_TYPE))), N'') AS RecordType,
+        NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(50), e.PROCESSED))), N'') AS Processed
+    FROM dbo.EDI AS e
+    WHERE @orderNumber IS NOT NULL
+      AND TRY_CONVERT(bigint, e.ORDERNUMBER) = @orderNumber
+    ORDER BY e.EDI_DATETIME;
+
+    -- Result set 5. Delivery Timing cases only. Other attributions, such as quality, stay off this page.
+    SELECT
+        NULLIF(LTRIM(RTRIM(c.CASE_NUMBER)), N'') AS CaseNumber,
+        NULLIF(LTRIM(RTRIM(c.CASE_STATUS)), N'') AS CaseStatus,
+        NULLIF(LTRIM(RTRIM(c.CASE_ATTRIBUTED)), N'') AS Attributed,
+        c.CASE_CREATEDDATE AS OpenedDate,
+        c.CASE_CLOSEDDATE AS ClosedDate,
+        NULLIF(LTRIM(RTRIM(c.CASE_SUBJECT)), N'') AS Subject,
+        NULLIF(LTRIM(RTRIM(c.CASE_REASON)), N'') AS Reason,
+        NULLIF(LTRIM(RTRIM(c.CASE_DESCRIPTION)), N'') AS Description,
+        NULLIF(LTRIM(RTRIM(c.NCR_CARRIER_NAME)), N'') AS CarrierName,
+        NULLIF(LTRIM(RTRIM(c.NCR_CAUSE)), N'') AS Cause
+    FROM dbo.Cases AS c
+    WHERE @orderNumber IS NOT NULL
+      AND TRY_CONVERT(bigint, c.SALESORDERNUMBER) = @orderNumber
+      AND c.CASE_ATTRIBUTED = N'Delivery Timing'
+    ORDER BY c.CASE_CREATEDDATE DESC, c.CASE_NUMBER;
+END
+GO

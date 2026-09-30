@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <title>IMCD Operations Tool — Carrier import</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <link rel="stylesheet" href="styles/fileinput.css">
+    <link rel="stylesheet" href="styles/style4.css">
+    <link rel="stylesheet" href="styles/imcd-style.css">
+</head>
+
+<body>
+    <div class="wrapper">
+        <div id="section_sidebar"></div>
+        <div id="content">
+            <div id="section_header"></div>
+            <div class="card page-hero mb-3">
+                <div class="card-body d-flex align-items-center">
+                    <div class="page-hero-badge mr-3"><i class="fas fa-file-import"></i></div>
+                    <div>
+                        <h1 class="page-hero-title mb-0">Carrier import</h1>
+                        <div class="page-hero-subtitle">Select a branch plant and upload an Excel file</div>
+                    </div>
+                </div>
+            </div>
+            <div class="container-fluid">
+                <div class="card card-body" id="uploadCard">
+                    <h5 class="header-table mb-3">Import data — file upload</h5>
+                    <div id="pageAlert" class="mb-2"></div>
+                    <div id="kv-error-1" class="alert alert-danger" role="alert" style="display:none;"></div>
+                    <div class="form-row mb-2">
+                        <div class="form-group col-md-3">
+                            <label for="branchPlant">Branch plant</label>
+                            <select id="branchPlant" class="form-control">
+                                <option value="">Select a branch plant</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="formatBanner" class="uf-format-banner">
+                        <div class="uf-format-banner-head">
+                            <div class="uf-format-banner-icon"><i class="fas fa-table"></i></div>
+                            <div class="uf-format-banner-title">
+                                <span>Required columns</span>
+                                <span class="uf-format-type-badge"><i class="fas fa-file-excel mr-1"></i>Excel</span>
+                            </div>
+                        </div>
+                        <div id="formatCols" class="uf-format-cols"></div>
+                        <div class="uf-format-warning">
+                            <i class="fas fa-exclamation-triangle"></i>
+                            <span id="formatWarningText">Columns must appear in this exact order and with the correct
+                                headers (case-sensitive). If the file does not meet this format, <strong>it will not be
+                                    processed</strong>.</span>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group col-md-12">
+                            <div class="file-loading">
+                                <input id="file" name="file" type="file"
+                                    accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+                            </div>
+                            <small class="text-muted d-block mt-2">Excel only (.xls, .xlsx). One file per
+                                upload.</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div id="section_footer"></div>
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.bundle.min.js"></script>
+    <script src="js/core/fileinput.js"></script>
+    <script src="js/core/theme.min.js"></script>
+    <script src="js/shell.js"></script>
+    <script>
+        const session = JSON.parse(localStorage.getItem("operationstoolusuario") || "null");
+        if (!session) {
+            window.location.href = "login.html";
+        }
+
+        const REQUIRED_COLUMNS = [
+            { label: "Carrier Code", type: "Text" },
+            { label: "Pick Number", type: "Text" },
+            { label: "Status", type: "Text" },
+            { label: "SKU", type: "Text" },
+            { label: "Delivery Date", type: "Date" },
+            { label: "Client", type: "Text" },
+            { label: "Address", type: "Text" },
+            { label: "Locality", type: "Text" },
+            { label: "Postal Code", type: "Text" },
+            { label: "Country", type: "Text" }
+        ];
+
+        function showPageAlert(kind, title, message) {
+            const alert = $("<div>", { "class": "alert alert-" + kind + " alert-dismissible fade show", role: "alert" });
+            alert.append(
+                $("<button>", { type: "button", "class": "close", "data-dismiss": "alert", "aria-label": "Close" })
+                    .append($("<span>", { "aria-hidden": "true", html: "&times;" }))
+            );
+            alert.append($("<strong>").text((title || "") + " "));
+            alert.append(document.createTextNode(message || ""));
+            $("#pageAlert").empty().append(alert);
+        }
+
+        function applyTokens(text, tokens) {
+            let out = text || "";
+            Object.keys(tokens || {}).forEach(function (key) {
+                out = out.split("{" + key + "}").join(tokens[key] == null ? "" : String(tokens[key]));
+            });
+            return out;
+        }
+
+        function showConfiguredAlert(id, tokens, fallbackKind, fallbackTitle, fallbackBody) {
+            const paint = function (kind, title, body) {
+                showPageAlert(kind, title, applyTokens(body, tokens));
+            };
+            $.get(URLBACKEND + "import-reports/alertMessage", { idMensaje: id }).done(function (rows) {
+                const msg = rows && rows[0];
+                if (!msg || !msg.title) {
+                    paint(fallbackKind, fallbackTitle, fallbackBody);
+                    return;
+                }
+                const icon = (msg.icon || "").toLowerCase();
+                const kind = icon === "danger" || icon === "warning" || icon === "success" || icon === "info"
+                    ? icon
+                    : fallbackKind;
+                paint(kind, msg.title, msg.body || fallbackBody);
+            }).fail(function () {
+                paint(fallbackKind, fallbackTitle, fallbackBody);
+            });
+        }
+
+        function renderColumns() {
+            let chips = "";
+            REQUIRED_COLUMNS.forEach(function (column, index) {
+                chips +=
+                    '<div class="uf-format-col-chip">' +
+                    '<span class="uf-col-num">' + (index + 1) + '</span>' +
+                    '<div class="uf-col-info">' +
+                    '<span class="uf-col-name">' + column.label + '</span>' +
+                    '<span class="uf-col-type">' + column.type + '</span>' +
+                    '</div>' +
+                    '</div>';
+            });
+            $("#formatCols").html(chips);
+        }
+
+        $(function () {
+            loadOperationsChrome();
+            renderColumns();
+
+            $.get(URLBACKEND + "import-reports/branchPlants").done(function (rows) {
+                const select = $("#branchPlant");
+                (rows || []).forEach(function (row) {
+                    select.append($("<option>", { value: row.BRP_Id, text: row.BRP_Description }));
+                });
+            }).fail(function () {
+                showConfiguredAlert("CARRIER_BRANCH_LOAD", null, "danger", "Branch plants", "Branch plants could not be loaded.");
+            });
+
+            $.get(URLBACKEND + "import-reports/alertMessage", { idMensaje: "CARRIER_COLUMNS" }).done(function (rows) {
+                const msg = rows && rows[0];
+                if (msg && msg.body) {
+                    $("#formatWarningText").text(msg.body);
+                }
+            });
+
+            document.getElementById("uploadCard").addEventListener("click", function (event) {
+                const button = event.target.closest(".fileinput-upload, .kv-file-upload");
+                if (!button || $("#branchPlant").val()) {
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                showConfiguredAlert(
+                    "CARRIER_BRANCH_REQUIRED", null, "danger",
+                    "Branch plant required", "Select a branch plant before uploading.");
+            }, true);
+
+            $("#file").fileinput({
+                theme: "fas",
+                uploadUrl: URLBACKEND + "import-reports/carrier",
+                uploadAsync: true,
+                browseOnZoneClick: true,
+                showPreview: true,
+                showUploadedThumbs: false,
+                multiple: false,
+                maxFileCount: 1,
+                dropZoneTitle: "Drag and drop an Excel file here",
+                elErrorContainer: "#kv-error-1",
+                allowedFileExtensions: ["xls", "xlsx"],
+                msgInvalidFileExtension: "Only Excel files (.xls, .xlsx) are allowed.",
+                browseClass: "btn btn-outline-primary",
+                browseLabel: " Select file",
+                browseIcon: '<i class="fas fa-file-import"></i>',
+                uploadClass: "btn btn-primary",
+                uploadLabel: " Upload",
+                uploadIcon: '<i class="fas fa-cloud-upload-alt"></i>',
+                removeClass: "btn btn-outline-danger",
+                removeLabel: " Remove",
+                removeIcon: '<i class="fas fa-trash-alt"></i>',
+                fileActionSettings: {
+                    showZoom: false,
+                    removeIcon: '<i class="fas fa-trash-alt"></i>',
+                    uploadIcon: '<i class="fas fa-cloud-upload-alt"></i>'
+                },
+                uploadExtraData: function () {
+                    return {
+                        brpId: $("#branchPlant").val(),
+                        localAdUser: session.UOT_LocalADUser || "",
+                        mail: session.UOT_Mail || "",
+                        userName: session.UOT_UserName || ""
+                    };
+                }
+            }).on("filebatchpreupload", function () {
+                if (!$("#branchPlant").val()) {
+                    showConfiguredAlert(
+                        "CARRIER_BRANCH_REQUIRED", null, "danger",
+                        "Branch plant required", "Select a branch plant before uploading.");
+                    return;
+                }
+                showConfiguredAlert("CARRIER_UPLOADING", null, "info", "Uploading", "The file is being imported.");
+            }).on("filepreajax", function () {
+                if ($("#branchPlant").val()) {
+                    return;
+                }
+                const plugin = $("#file").data("fileinput");
+                if (plugin) {
+                    plugin.unlock();
+                    plugin.$progress.addClass("kv-hidden").empty();
+                }
+                return false;
+            }).on("fileuploaded", function (_event, data) {
+                $("#kv-error-1").hide().empty();
+                const result = (data && data.response) || {};
+                showConfiguredAlert(
+                    "CARRIER_UPLOAD_OK",
+                    { importId: result.importId, rowCount: result.rowCount },
+                    "success",
+                    "Upload complete",
+                    "Import {importId} stored {rowCount} row(s).");
+            }).on("fileuploaderror filebatchuploaderror filecustomerror", function (_event, _data, msg) {
+                $("#kv-error-1").stop(true, true).hide().empty();
+                const text = $("<div>").html(msg || "").text().trim() || "The file could not be imported.";
+                showConfiguredAlert("CARRIER_UPLOAD_ERROR", { detail: text }, "danger", "Upload error", "{detail}");
+            });
+        });
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,124 @@
+USE [MOSAIC]
+GO
+
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+/****************************************************************************************************
+PROCEDURE NAME : [OperationsTool].[CreateCases]
+VERSION        : v1.0
+CREATION DATE  : 2026-09-28
+
+DESCRIPTION:
+----------------------------------------------------------------------------------------------
+ETL procedure that rebuilds [OPERATIONSTOOL].[dbo].[Cases] as a slice of
+[MOSAIC].[dbo].[Cases].
+
+The slice keeps Cases rows from 2026-01-01 onward:
+    CASE_CREATEDDATE >= '2026-01-01'
+
+TARGET TABLES:
+----------------------------------------------------------------------------------------------
+• [MOSAIC].[dbo].[Cases]            → Source.
+• [OPERATIONSTOOL].[dbo].[Cases]    → Destination slice.
+• [MOSAIC].[Monitor].[LogEtl]                  → ETL execution log.
+
+PARAMETERS:
+----------------------------------------------------------------------------------------------
+(No input parameters)
+
+Internal variables:
+   @DATABASE     NVARCHAR(50)  = 'OPERATIONSTOOL'
+   @SCHEMANAME   NVARCHAR(50)  = 'dbo'
+   @TABLENAME    SYSNAME       = 'Cases'
+   @PERCW        DECIMAL(14,2) = 5.00   → Weekly process weight.
+   @PERCE        DECIMAL(14,2) = 10.00  → Standard process weight.
+
+FUNCTIONAL STEPS:
+----------------------------------------------------------------------------------------------
+1. Start the process and register it in [MANAGEMENT].[LogDataInsert], returning @PROCESS_ID.
+2. Load the filtered source rows into [#TEMP_CASES].
+3. When the temp table has rows, drop and recreate [OPERATIONSTOOL].[dbo].[Cases].
+4. Create the reporting-date index and update statistics.
+5. Register the result with [MANAGEMENT].[LogDataUpdate].
+
+OUTPUT / LOGGING:
+----------------------------------------------------------------------------------------------
+- [OPERATIONSTOOL].[dbo].[Cases] replaced with the current slice.
+- Execution logged in [MOSAIC].[Monitor].[LogEtl].
+
+ERROR HANDLING:
+----------------------------------------------------------------------------------------------
+- TRY/CATCH.
+- On error, ERR_MESSAGE, ERR_LINE, ERR_PROCEDURE, ERR_NUMBER, ERR_SEVERITY and ERR_STATE
+  are written to [Monitor].[LogEtl] and the procedure returns.
+
+NOTES:
+----------------------------------------------------------------------------------------------
+- Idempotent: each successful run replaces the destination table.
+- The destination is left unchanged when the filtered source returns no rows.
+****************************************************************************************************/
+
+CREATE OR ALTER PROCEDURE [OperationsTool].[CreateCases]
+AS
+BEGIN
+
+SET NOCOUNT ON
+
+DECLARE @PROCESS_ID int
+DECLARE @RECORDS int
+DECLARE @RECORDS_OLD INT
+DECLARE @DATABASE NVARCHAR(50) = 'OPERATIONSTOOL'
+DECLARE @SCHEMANAME NVARCHAR(50) = 'dbo'
+DECLARE @TABLENAME SYSNAME = 'Cases'
+DECLARE @PERCW DECIMAL(14,2) = 5.00
+DECLARE @PERCE DECIMAL(14,2) = 10.00
+
+EXEC [MOSAIC].[MANAGEMENT].[LogDataInsert] @DATABASE, @SCHEMANAME, @TABLENAME, @RECORDS_OLD OUT, @PROCESS_ID OUT
+
+IF OBJECT_ID(N'tempdb..#TEMP_CASES') IS NOT NULL
+BEGIN
+    DROP TABLE #TEMP_CASES
+END
+
+BEGIN TRY
+
+    SELECT *
+    INTO #TEMP_CASES
+    FROM [MOSAIC].[dbo].[Cases]
+    WHERE CASE_CREATEDDATE >= '2026-01-01'
+
+    IF ((SELECT COUNT(*) FROM #TEMP_CASES) > 0)
+    BEGIN
+        DROP TABLE IF EXISTS [OPERATIONSTOOL].[dbo].[Cases];
+
+        SELECT *
+        INTO [OPERATIONSTOOL].[dbo].[Cases]
+        FROM #TEMP_CASES
+
+        CREATE NONCLUSTERED INDEX IX_Cases_CreatedDate
+        ON [OPERATIONSTOOL].[dbo].[Cases] (CASE_CREATEDDATE);
+
+        UPDATE STATISTICS [OPERATIONSTOOL].[dbo].[Cases] WITH FULLSCAN;
+    END
+
+END TRY
+BEGIN CATCH
+    UPDATE [Monitor].[LogEtl]
+        SET END_DATE = CURRENT_TIMESTAMP,
+            ERR_MESSAGE = (SELECT ERROR_MESSAGE()),
+            ERR_LINE = (SELECT ERROR_LINE()),
+            ERR_PROCEDURE = (SELECT ERROR_PROCEDURE()),
+            ERR_NUMBER = (SELECT ERROR_NUMBER()),
+            ERR_SEVERITY = (SELECT ERROR_SEVERITY()),
+            ERR_STATE = (SELECT ERROR_STATE()),
+            RECORDS = 0
+        WHERE PROCESS_ID = @PROCESS_ID
+    RETURN
+END CATCH
+
+EXEC [MOSAIC].[MANAGEMENT].[LogDataUpdate] @DATABASE, @SCHEMANAME, @TABLENAME, @RECORDS_OLD, @PROCESS_ID, @PERCW, @PERCE
+
+END
+GO

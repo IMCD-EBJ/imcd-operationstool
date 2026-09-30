@@ -1,0 +1,104 @@
+USE [MOSAIC]
+GO
+/****** Object:  StoredProcedure [MANAGEMENT].[UpdateData_OperationsTool]    Script Date: 29/09/2026 17:02:11 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+/****************************************************************************************************
+PROCEDURE NAME : [MANAGEMENT].[UpdateData_OperationsTool]
+VERSION        : v1.0
+AUTHOR         : Enrique Barrera (Mosaic Framework Team)
+CREATION DATE  : 2026-09-29
+
+DESCRIPTION:
+----------------------------------------------------------------------------------------------
+Procedimiento encargado de **ejecutar dinámicamente los procesos ETL asociados al módulo OperationsTool**, 
+según la configuración registrada en la tabla [MANAGEMENT].[MosaicJobsTables].
+
+Cada ejecución identifica su propio nombre de procedimiento (`SP_NAME`) y procesa únicamente los
+registros activos (`TABLE_STATUS = 1`), permitiendo una gestión centralizada y parametrizable 
+de cargas automáticas de datos dentro del ecosistema MOSAIC.
+
+TARGET TABLES:
+----------------------------------------------------------------------------------------------
+• [MANAGEMENT].[MosaicJobsTables]  → Control y trazabilidad de ejecuciones PriceTool.  
+• [OperationsTool].[dbo].*              → Tablas de destino actualizadas dinámicamente.  
+
+PARAMETERS:
+----------------------------------------------------------------------------------------------
+(Ninguno)  
+El procedimiento detecta su propia identidad (`[MANAGEMENT].[UpdateData_OperationsTool]`) y filtra las
+filas correspondientes en [MosaicJobsTables].
+
+****************************************************************************************************/
+
+CREATE OR ALTER PROCEDURE [MANAGEMENT].[UpdateData_OperationsTool]
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE 
+        @SP_SELF_NAME NVARCHAR(255) = '[MANAGEMENT].[UpdateData_OperationsTool]',
+        @TABLE_NAME NVARCHAR(255),
+        @JOB_NAME NVARCHAR(255),
+        @SP_EXEC NVARCHAR(255),
+        @SQL NVARCHAR(MAX),
+        @return_value INT;
+
+    PRINT '===============================================';
+    PRINT 'INICIO DE CARGA DE DATOS PARA ' + @SP_SELF_NAME;
+    PRINT '===============================================';
+
+    DECLARE cur CURSOR FOR
+        SELECT TABLE_NAME, JOB_NAME
+        FROM [MOSAIC].[MANAGEMENT].[MosaicJobsTables]
+        WHERE SP_NAME = @SP_SELF_NAME
+          AND TABLE_STATUS = 1;
+
+    OPEN cur;
+    FETCH NEXT FROM cur INTO @TABLE_NAME, @JOB_NAME;
+
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        PRINT '----------------------------------------------------';
+        PRINT 'Procesando procedimiento: ' + @TABLE_NAME;
+
+        BEGIN TRY
+            -- Ejecutar exactamente el SP indicado en la tabla
+            SET @SP_EXEC = @TABLE_NAME;
+
+            PRINT 'Ejecutando SP: ' + @SP_EXEC;
+
+            SET @SQL = N'EXEC @return_value = ' + @SP_EXEC;
+            EXEC sp_executesql @SQL, N'@return_value int OUTPUT', @return_value OUTPUT;
+
+            IF @return_value = 0
+            BEGIN
+                UPDATE [MOSAIC].[MANAGEMENT].[MosaicJobsTables]
+                SET LAST_UPDATE = GETDATE()
+                WHERE TABLE_NAME = @TABLE_NAME
+                  AND SP_NAME = @SP_SELF_NAME;
+
+                PRINT '✅ ' + @SP_EXEC + ' ejecutado correctamente.';
+            END
+            ELSE
+            BEGIN
+                PRINT '⚠️ Error en la ejecución de ' + @SP_EXEC;
+            END
+        END TRY
+        BEGIN CATCH
+            PRINT '❌ Error en ' + ISNULL(@TABLE_NAME, 'proceso desconocido') + ': ' + ERROR_MESSAGE();
+        END CATCH;
+
+        FETCH NEXT FROM cur INTO @TABLE_NAME, @JOB_NAME;
+    END;
+
+    CLOSE cur;
+    DEALLOCATE cur;
+
+    PRINT '===============================================';
+    PRINT 'FIN DEL PROCESO DE CARGA DE DATOS PARA ' + @SP_SELF_NAME;
+    PRINT '===============================================';
+END;

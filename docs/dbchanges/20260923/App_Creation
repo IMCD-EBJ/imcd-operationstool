@@ -1,0 +1,25 @@
+USE [MOSAIC]
+INSERT INTO [MOSAIC].[dbo].[Applications] (AppName, AppDescription)
+VALUES ('OperationsTool', 'Operations Tool');
+
+
+USE [OPERATIONSTOOL]
+GO
+
+CREATE OR ALTER VIEW [dbo].[UsersOperationsTool]
+AS
+SELECT DISTINCT
+    IdRegion       AS UOTIdRegion,
+    RolName        AS UOTTipoUserId,
+    AppRolUsername AS UOTId,
+    BU_Id,
+    AppRolId       AS UOTAppRolId,
+    Mail           AS UOTMail,
+    LocalADUser    AS UOTLocalADUuser,
+    AppRolStatus   AS UOTAppRolStatus,
+    UserName       AS UOTUserName
+FROM MOSAIC.dbo.UsersForApps
+WHERE ApplicationId = '9'
+  AND AppRolStatus = 'Active'
+  AND RolName IN ('ADMIN', 'OPERATIONS');
+GO

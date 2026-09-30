@@ -1,0 +1,319 @@
+USE [OPERATIONSTOOL]
+GO
+
+/*
+    Carrier Excel import.
+    Run Procedure_ExcelImport first (catalog tables and staging procedures).
+    The workbook is loaded by imcd-platform-lib into a staging table.
+    RC_StoreName dbo.Carrier_Import_Validate checks the staging rows.
+    dbo.Carrier_Imported_Data_Load copies those rows into Carrier_Imported_Data
+    and adds the import id, import date, user, and branch plant.
+    dbo.Configuration_AlertMessage holds the fixed texts shown on the page.
+*/
+
+IF OBJECT_ID(N'dbo.Carrier_Imported_Data', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.Carrier_Imported_Data
+    (
+        ID                INT IDENTITY(1,1) NOT NULL,
+        Import_Id         INT               NOT NULL,
+        Import_Date       DATETIME          NOT NULL,
+        UOT_LocalADUser   NVARCHAR(200)     NULL,
+        UOT_Mail          NVARCHAR(200)     NULL,
+        UOT_UserName      NVARCHAR(200)     NULL,
+        BRP_Id            INT               NOT NULL,
+        Carrier_Code      NVARCHAR(255)     NULL,
+        Pick_Number       NVARCHAR(255)     NULL,
+        Status            NVARCHAR(255)     NULL,
+        SKU               NVARCHAR(255)     NULL,
+        Delivery_Date     DATETIME          NULL,
+        Client            NVARCHAR(255)     NULL,
+        Locality          NVARCHAR(255)     NULL,
+        Address           NVARCHAR(255)     NULL,
+        Country           NVARCHAR(255)     NULL,
+        Postal_Code       NVARCHAR(255)     NULL,
+        CONSTRAINT PK_Carrier_Imported_Data PRIMARY KEY CLUSTERED (ID)
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM dbo.ReportCatalogImport WHERE RC_ReportType = N'CARRIER')
+BEGIN
+    INSERT INTO dbo.ReportCatalogImport
+        (RC_ReportName, RC_SheetData, RC_TableName, RC_StoreName, RC_ReportType)
+    VALUES
+        (N'Carrier import', 0, N'Carrier_Import', N'dbo.Carrier_Import_Validate', N'CARRIER');
+END
+GO
+
+DECLARE @reportId INT = (SELECT RC_ReportId FROM dbo.ReportCatalogImport WHERE RC_ReportType = N'CARRIER');
+
+IF NOT EXISTS (SELECT 1 FROM dbo.ObjectExcelFieldsImport WHERE ObjectId = @reportId)
+BEGIN
+    INSERT INTO dbo.ObjectExcelFieldsImport (ObjectId, ColumnId, ColumnLabel, ColumnType, ColumnExpression)
+    VALUES
+        (@reportId, 1,  N'Carrier Code', N'string', N'[Carrier_Code]'),
+        (@reportId, 2,  N'Pick Number',  N'string', N'[Pick_Number]'),
+        (@reportId, 3,  N'Status',       N'string', N'[Status]'),
+        (@reportId, 4,  N'SKU',          N'string', N'[SKU]'),
+        (@reportId, 5,  N'Delivery Date',N'date',   N'[Delivery_Date]'),
+        (@reportId, 6,  N'Client',       N'string', N'[Client]'),
+        (@reportId, 7,  N'Address',      N'string', N'[Address]'),
+        (@reportId, 8,  N'Locality',     N'string', N'[Locality]'),
+        (@reportId, 9,  N'Postal Code',  N'string', N'[Postal_Code]'),
+        (@reportId, 10, N'Country',      N'string', N'[Country]');
+END
+
+UPDATE dbo.ObjectExcelFieldsImport
+SET ColumnLabel = N'Postal Code'
+WHERE ObjectId = @reportId
+  AND ColumnLabel = N'Postal code';
+
+UPDATE dbo.ObjectExcelFieldsImport
+SET ColumnId = CASE ColumnLabel
+    WHEN N'Address' THEN 7
+    WHEN N'Locality' THEN 8
+    WHEN N'Postal Code' THEN 9
+    WHEN N'Country' THEN 10
+    ELSE ColumnId
+END
+WHERE ObjectId = @reportId
+  AND ColumnLabel IN (N'Address', N'Locality', N'Postal Code', N'Country');
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[BranchPlants_Consult]
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        BRP_Id,
+        BRP_Description
+    FROM dbo.BranchPlants
+    WHERE BRP_Id = 411501 -- For now only DSV
+    ORDER BY BRP_Description;
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[CarrierImport_Report_Consult]
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT RC_ReportId
+    FROM dbo.ReportCatalogImport
+    WHERE RC_ReportType = N'CARRIER';
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[Carrier_Imported_Data_Load]
+    @tableName     sysname,
+    @brpId         int,
+    @localAdUser   nvarchar(200),
+    @mail          nvarchar(200),
+    @userName      nvarchar(200),
+    @errorMessage  nvarchar(max) OUTPUT,
+    @importId      int OUTPUT,
+    @rowCount      int OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @importId = NULL;
+    SET @rowCount = 0;
+    SET @errorMessage = N'OK';
+
+    IF @tableName IS NULL
+        OR @tableName = N''
+        OR @tableName LIKE N'%[^A-Za-z0-9_]%'
+    BEGIN
+        SET @errorMessage = N'ERROR: The uploaded file could not be saved.';
+        RETURN;
+    END
+
+    IF OBJECT_ID(N'dbo.' + @tableName, N'U') IS NULL
+    BEGIN
+        SET @errorMessage = N'ERROR: The uploaded file could not be saved.';
+        RETURN;
+    END
+
+    IF NOT EXISTS (SELECT 1 FROM dbo.BranchPlants WHERE BRP_Id = @brpId)
+    BEGIN
+        SET @errorMessage = N'ERROR: The selected branch plant was not found.';
+        RETURN;
+    END
+
+    DECLARE @nextId int = ISNULL((SELECT MAX(Import_Id) FROM dbo.Carrier_Imported_Data), 0) + 1;
+    DECLARE @importedAt datetime = GETDATE();
+    DECLARE @sql nvarchar(max) = N'
+        INSERT INTO dbo.Carrier_Imported_Data
+            (Import_Id, Import_Date, UOT_LocalADUser, UOT_Mail, UOT_UserName, BRP_Id,
+             Carrier_Code, Pick_Number, Status, SKU, Delivery_Date, Client, Locality, Address, Country, Postal_Code)
+        SELECT
+            @nextId, @importedAt, @localAdUser, @mail, @userName, @brpId,
+            Carrier_Code, Pick_Number, Status, SKU, Delivery_Date, Client, Locality, Address, Country, Postal_Code
+        FROM dbo.' + QUOTENAME(@tableName) + N';
+        SET @inserted = @@ROWCOUNT;';
+
+    DECLARE @inserted int;
+    EXEC sys.sp_executesql
+        @sql,
+        N'@nextId int, @importedAt datetime, @localAdUser nvarchar(200), @mail nvarchar(200), @userName nvarchar(200), @brpId int, @inserted int OUTPUT',
+        @nextId = @nextId,
+        @importedAt = @importedAt,
+        @localAdUser = @localAdUser,
+        @mail = @mail,
+        @userName = @userName,
+        @brpId = @brpId,
+        @inserted = @inserted OUTPUT;
+
+    SET @rowCount = ISNULL(@inserted, 0);
+    SET @importId = CASE WHEN @rowCount > 0 THEN @nextId ELSE NULL END;
+    SET @errorMessage = N'OK';
+END
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[Carrier_Import_Validate]
+    @tableName    sysname,
+    @errorMessage nvarchar(max) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @errorMessage = N'OK';
+
+    IF @tableName IS NULL
+        OR @tableName = N''
+        OR @tableName LIKE N'%[^A-Za-z0-9_]%'
+        OR OBJECT_ID(N'dbo.' + @tableName, N'U') IS NULL
+    BEGIN
+        SET @errorMessage = N'ERROR: The uploaded file could not be checked.';
+        RETURN;
+    END
+
+    DECLARE @conflicts nvarchar(max);
+    DECLARE @sql nvarchar(max) = N'
+        SELECT @conflicts = STRING_AGG(detail, N''; '')
+        FROM (
+            SELECT TOP (5)
+                N''Pick Number '' + COALESCE(NULLIF(LTRIM(RTRIM(Pick_Number)), N''''), N''(blank)'')
+                + N'' and SKU '' + COALESCE(NULLIF(LTRIM(RTRIM(SKU)), N''''), N''(blank)'') AS detail
+            FROM dbo.' + QUOTENAME(@tableName) + N'
+            GROUP BY Pick_Number, SKU
+            HAVING COUNT(DISTINCT ISNULL(CONVERT(varchar(10), Delivery_Date, 23), N''NO DATE'')) > 1
+        ) conflicts;';
+
+    EXEC sys.sp_executesql
+        @sql,
+        N'@conflicts nvarchar(max) OUTPUT',
+        @conflicts = @conflicts OUTPUT;
+
+    IF @conflicts IS NOT NULL AND @conflicts <> N''
+    BEGIN
+        SET @errorMessage = N'ERROR: Each pick number and SKU must have a single delivery date. These do not: '
+            + @conflicts + N'.';
+        RETURN;
+    END
+
+    IF OBJECT_ID(N'dbo.Carrier_Imported_Data', N'U') IS NULL
+    BEGIN
+        RETURN;
+    END
+
+    DECLARE @already nvarchar(max);
+    SET @sql = N'
+        SELECT @already = STRING_AGG(detail, N''; '')
+        FROM (
+            SELECT TOP (5)
+                N''Pick Number '' + COALESCE(NULLIF(LTRIM(RTRIM(s.Pick_Number)), N''''), N''(blank)'')
+                + N'' and SKU '' + COALESCE(NULLIF(LTRIM(RTRIM(s.SKU)), N''''), N''(blank)'')
+                + N'' on '' + ISNULL(CONVERT(varchar(10), MIN(s.Delivery_Date), 105), N''(no date)'') AS detail
+            FROM dbo.' + QUOTENAME(@tableName) + N' AS s
+            INNER JOIN dbo.Carrier_Imported_Data AS stored
+                ON stored.Pick_Number = s.Pick_Number
+               AND stored.SKU = s.SKU
+               AND ISNULL(CONVERT(varchar(10), stored.Delivery_Date, 23), N''NO DATE'')
+                 = ISNULL(CONVERT(varchar(10), s.Delivery_Date, 23), N''NO DATE'')
+            GROUP BY s.Pick_Number, s.SKU
+        ) already;';
+
+    EXEC sys.sp_executesql
+        @sql,
+        N'@already nvarchar(max) OUTPUT',
+        @already = @already OUTPUT;
+
+    IF @already IS NOT NULL AND @already <> N''
+    BEGIN
+        SET @errorMessage = N'ERROR: These pick numbers and SKUs were already imported with the same delivery date: '
+            + @already + N'.';
+    END
+END
+GO
+
+UPDATE dbo.ReportCatalogImport
+SET RC_StoreName = N'dbo.Carrier_Import_Validate'
+WHERE RC_ReportType = N'CARRIER';
+GO
+
+IF OBJECT_ID(N'dbo.Configuration_AlertMessage', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.Configuration_AlertMessage
+    (
+        CAM_IdMessage  NVARCHAR(100)  NOT NULL,
+        CAM_Title      NVARCHAR(200)  NULL,
+        CAM_Body       NVARCHAR(MAX)  NULL,
+        CAM_Icon       NVARCHAR(50)   NULL,
+        CAM_Buttons    NVARCHAR(50)   NULL,
+        CAM_Button1    NVARCHAR(100)  NULL,
+        CAM_Button2    NVARCHAR(100)  NULL,
+        CAM_DangerMode NVARCHAR(10)   NULL,
+        CAM_Type       NVARCHAR(50)   NULL,
+        CONSTRAINT PK_Configuration_AlertMessage PRIMARY KEY CLUSTERED (CAM_IdMessage)
+    );
+END
+GO
+
+MERGE dbo.Configuration_AlertMessage AS target
+USING (VALUES
+    (N'CARRIER_BRANCH_REQUIRED', N'Branch plant required', N'Select a branch plant before uploading.', N'danger', NULL, NULL, NULL, NULL, N'Error'),
+    (N'CARRIER_BRANCH_LOAD', N'Branch plants', N'Branch plants could not be loaded.', N'danger', NULL, NULL, NULL, NULL, N'Error'),
+    (N'CARRIER_UPLOADING', N'Uploading', N'The file is being imported.', N'info', NULL, NULL, NULL, NULL, N'Info'),
+    (N'CARRIER_UPLOAD_OK', N'Upload complete', N'Import {importId} stored {rowCount} row(s).', N'success', NULL, NULL, NULL, NULL, N'Success'),
+    (N'CARRIER_UPLOAD_ERROR', N'Upload error', N'{detail}', N'danger', NULL, NULL, NULL, NULL, N'Error'),
+    (N'CARRIER_COLUMNS', N'Required columns', N'Columns must appear in this exact order and with the correct headers (case-sensitive). If the file does not meet this format, it will not be processed.', N'warning', NULL, NULL, NULL, NULL, N'Warning')
+) AS source (CAM_IdMessage, CAM_Title, CAM_Body, CAM_Icon, CAM_Buttons, CAM_Button1, CAM_Button2, CAM_DangerMode, CAM_Type)
+ON target.CAM_IdMessage = source.CAM_IdMessage
+WHEN MATCHED THEN
+    UPDATE SET
+        CAM_Title = source.CAM_Title,
+        CAM_Body = source.CAM_Body,
+        CAM_Icon = source.CAM_Icon,
+        CAM_Buttons = source.CAM_Buttons,
+        CAM_Button1 = source.CAM_Button1,
+        CAM_Button2 = source.CAM_Button2,
+        CAM_DangerMode = source.CAM_DangerMode,
+        CAM_Type = source.CAM_Type
+WHEN NOT MATCHED THEN
+    INSERT (CAM_IdMessage, CAM_Title, CAM_Body, CAM_Icon, CAM_Buttons, CAM_Button1, CAM_Button2, CAM_DangerMode, CAM_Type)
+    VALUES (source.CAM_IdMessage, source.CAM_Title, source.CAM_Body, source.CAM_Icon, source.CAM_Buttons, source.CAM_Button1, source.CAM_Button2, source.CAM_DangerMode, source.CAM_Type);
+GO
+
+CREATE OR ALTER PROCEDURE [dbo].[Configuration_AlertMessage_Consult]
+    @idMensaje nvarchar(100)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        CAM_Title,
+        CAM_Body,
+        CAM_Icon,
+        CAM_Buttons,
+        CAM_Button1,
+        CAM_Button2,
+        CAM_DangerMode,
+        CAM_Type
+    FROM dbo.Configuration_AlertMessage
+    WHERE CAM_IdMessage = @idMensaje;
+END
+GO
