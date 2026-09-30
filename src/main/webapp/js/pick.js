@@ -33,7 +33,7 @@ function renderPick(data) {
         : "";
     const result = header.result
         ? '<div class="tp-result ' + (header.result === "Late" ? "tp-result-late" : "tp-result-ontime") + '">'
-            + escapeHtml(header.result) + "</div>"
+        + escapeHtml(header.result) + "</div>"
         : "";
 
     $("#pickHero").html(
@@ -95,7 +95,7 @@ function timingTable(header) {
         + dateTile("Warehouse arrival", formatDate(header.warehouseArrival), "After 13:30 this rolls to the next working day")
         + dateTile("Earliest viable", formatDate(header.earliestViableDate), "Arrival plus transit days")
         + dateTile("Retained date", formatDate(header.comparisonDate), "Later of promised and earliest viable", "tp-date-key")
-        + dateTile("Carrier Fecha Entrega", formatDate(header.fechaEntrega), "Latest import of this pick", late ? "tp-date-late" : "")
+        + dateTile("Carrier Delivery Date", formatDate(header.fechaEntrega), "Latest import of this pick", late ? "tp-date-late" : "")
         + dateTile("Days late", header.daysLate == null ? "" : String(header.daysLate), "Zero when the pick is on time", late ? "tp-date-late" : "")
         + dateTile("Timing NCR", header.timingNcr ? "Yes" : "No", "A Delivery Timing case on this order", header.timingNcr ? "tp-date-late" : "")
         + "</div>";

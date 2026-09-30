@@ -1,2 +1,0 @@
-  INSERT INTO [MOSAIC].[MANAGEMENT].[MosaicJobsTables] (SP_ID, SP_NAME, TABLE_ID, TABLE_NAME, JOB_NAME, LAST_UPDATE, TABLE_STATUS, group_id)
-  VALUES (54, '[MANAGEMENT].[UpdateData_ReportingDaily]', 0, '[Reporting].[CreateDeliveryToolUsageData]', 'UpdateData_ReportingDaily', GETDATE(), 1, 20)
