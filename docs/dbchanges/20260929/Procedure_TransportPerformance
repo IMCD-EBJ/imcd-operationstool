@@ -963,6 +963,7 @@ BEGIN
 
     -- Result set 3. Every carrier import of this pick, not only the latest.
     SELECT
+        PickNumber,
         Import_Id AS ImportId,
         Import_Date AS ImportDate,
         CarrierCode,

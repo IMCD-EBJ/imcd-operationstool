@@ -535,6 +535,7 @@ public class TransportPerformanceController {
 
     private static Map<String, Object> mapPickCarrier(ResultSet rs) throws SQLException {
         Map<String, Object> row = new LinkedHashMap<>();
+        row.put("pickNumber", rs.getString("PickNumber"));
         row.put("importId", rs.getInt("ImportId"));
         row.put("importDate", readDateTime(rs, "ImportDate"));
         row.put("carrierCode", rs.getString("CarrierCode"));

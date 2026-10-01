@@ -54,10 +54,10 @@ function renderPick(data) {
     $("#pickPage").html(
         facts(header, ship, zone)
         + section("Why this result", "fas fa-clock", timingTable(header))
-        + section("Sales lines", "fas fa-list-ul", linesTable(data.lines || []))
+        + section("Sales Order lines", "fas fa-list-ul", linesTable(data.lines || []))
         + section("Carrier file", "fas fa-truck", carrierTable(data.carrier || []))
         + section("EDI", "fas fa-exchange-alt", ediTable(data.edi || []))
-        + section("Cases", "fas fa-folder-open", casesTable(data.cases || []))
+        + section("NCR Cases", "fas fa-folder-open", casesTable(data.cases || []))
     );
 }
 
@@ -92,7 +92,7 @@ function timingTable(header) {
         + '<div class="tp-dates">'
         + dateTile("Promised date", formatDate(header.promisedDate), "Date promised to the customer")
         + dateTile("Transmit (EDI)", formatDateTime(header.transmitDateTime), "Earliest inbound message")
-        + dateTile("Warehouse arrival", formatDate(header.warehouseArrival), "After 13:30 this rolls to the next working day")
+        + dateTile("Effective Warehouse arrival", formatDate(header.warehouseArrival), "After 13:30 this rolls to the next working day")
         + dateTile("Earliest viable", formatDate(header.earliestViableDate), "Arrival plus transit days")
         + dateTile("Retained date", formatDate(header.comparisonDate), "Later of promised and earliest viable", "tp-date-key")
         + dateTile("Carrier Delivery Date", formatDate(header.fechaEntrega), "Latest import of this pick", late ? "tp-date-late" : "")
@@ -129,9 +129,10 @@ function carrierTable(rows) {
         return '<div class="text-muted">No carrier rows for this pick.</div>';
     }
     return table(
-        ["Import", "Imported", "Code", "Status", "SKU", "Fecha Entrega", "Client", "Address", "Locality", "Postal code", "Country"],
+        ["Pick number", "Import", "Imported", "Code", "Status", "SKU", "Fecha Entrega", "Client", "Address", "Locality", "Postal code", "Country"],
         rows.map(function (row) {
             return [
+                row.pickNumber,
                 row.importId,
                 formatDateTime(row.importDate),
                 row.carrierCode,
