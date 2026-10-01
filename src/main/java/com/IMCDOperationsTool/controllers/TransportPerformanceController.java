@@ -31,6 +31,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.imcd.platformlib.excel.ExcelExportService;
 import com.imcd.platformlib.excel.model.ExcelColumnType;
 import com.imcd.platformlib.excel.model.ExcelExportRequest;
@@ -53,6 +56,7 @@ public class TransportPerformanceController {
     private static final DateTimeFormatter DAY = DateTimeFormatter.ofPattern("dd/MM/yyyy");
     private static final DateTimeFormatter DAY_TIME = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
     private static final DateTimeFormatter FILE_DAY = DateTimeFormatter.BASIC_ISO_DATE;
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final JdbcTemplate jdbcTemplate;
     private final ExcelExportService excelExportService;
@@ -122,10 +126,9 @@ public class TransportPerformanceController {
     public ResponseEntity<Object> consult(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
-            @RequestParam(required = false) String productName,
-            @RequestParam(required = false) String productSegment,
+            @RequestParam(required = false) String products,
+            @RequestParam(required = false) String accounts,
             @RequestParam(required = false) String accountOwner,
-            @RequestParam(required = false) String accountName,
             @RequestParam(required = false) String carrierZone,
             @RequestParam(required = false) String result,
             @RequestParam(required = false) String pickNumber,
@@ -135,7 +138,8 @@ public class TransportPerformanceController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "10") int pageSize) {
         try {
-            DashboardData data = load(fromDate, toDate, productName, productSegment, accountOwner, accountName,
+            DashboardData data = load(fromDate, toDate, writeJson(readProducts(products)), null,
+                    accountOwner, writeJson(readAccounts(accounts)),
                     carrierZone, result, pickNumber, orderNumber, sortColumn, sortDirection, page, pageSize);
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("summary", data.summary);
@@ -182,10 +186,9 @@ public class TransportPerformanceController {
     public ResponseEntity<Object> export(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
-            @RequestParam(required = false) String productName,
-            @RequestParam(required = false) String productSegment,
+            @RequestParam(required = false) String products,
+            @RequestParam(required = false) String accounts,
             @RequestParam(required = false) String accountOwner,
-            @RequestParam(required = false) String accountName,
             @RequestParam(required = false) String carrierZone,
             @RequestParam(required = false) String result,
             @RequestParam(required = false) String pickNumber,
@@ -193,10 +196,13 @@ public class TransportPerformanceController {
             @RequestParam(required = false) String sortColumn,
             @RequestParam(required = false) String sortDirection) {
         try {
-            DashboardData data = load(fromDate, toDate, productName, productSegment, accountOwner, accountName,
+            List<Map<String, String>> productItems = readProducts(products);
+            List<String> accountItems = readAccounts(accounts);
+            DashboardData data = load(fromDate, toDate, writeJson(productItems), null,
+                    accountOwner, writeJson(accountItems),
                     carrierZone, result, pickNumber, orderNumber, sortColumn, sortDirection, 1, 0);
             ExcelExportResult file = excelExportService.export(workbook(
-                    fromDate, toDate, productName, productSegment, accountOwner, accountName, carrierZone, result,
+                    fromDate, toDate, productItems, accountOwner, accountItems, carrierZone, result,
                     pickNumber, orderNumber, data));
             return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.fileName() + "\"")
@@ -377,16 +383,16 @@ public class TransportPerformanceController {
         });
     }
 
-    private ExcelExportRequest workbook(LocalDate fromDate, LocalDate toDate, String productName,
-            String productSegment, String accountOwner, String accountName,
+    private ExcelExportRequest workbook(LocalDate fromDate, LocalDate toDate, List<Map<String, String>> products,
+            String accountOwner, List<String> accountName,
             String carrierZone, String result, String pickNumber, String orderNumber,
             DashboardData data) {
         List<ExcelLabelValue> metadata = new ArrayList<>();
         metadata.add(new ExcelLabelValue("From promised date", fromDate == null ? "" : DAY.format(fromDate)));
         metadata.add(new ExcelLabelValue("To promised date", toDate == null ? "" : DAY.format(toDate)));
-        metadata.add(new ExcelLabelValue("Product", productLabel(productSegment, productName)));
+        metadata.add(new ExcelLabelValue("Product", productLabels(products)));
         metadata.add(new ExcelLabelValue("Account owner", blankToAll(accountOwner)));
-        metadata.add(new ExcelLabelValue("Account name", blankToAll(accountName)));
+        metadata.add(new ExcelLabelValue("Account name", joinLabels(accountName)));
         metadata.add(new ExcelLabelValue("Carrier zone", blankToAll(carrierZone)));
         metadata.add(new ExcelLabelValue("Result", blankToAll(result)));
         metadata.add(new ExcelLabelValue("Pick number", blankToAll(pickNumber)));
@@ -648,6 +654,32 @@ public class TransportPerformanceController {
         return value == null || value.isBlank() ? "All" : value.trim();
     }
 
+    private static String joinLabels(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return "All";
+        }
+        List<String> clean = new ArrayList<>();
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                clean.add(value.trim());
+            }
+        }
+        return clean.isEmpty() ? "All" : String.join(", ", clean);
+    }
+
+    private static String productLabels(List<Map<String, String>> products) {
+        List<String> labels = new ArrayList<>();
+        if (products != null) {
+            for (Map<String, String> product : products) {
+                String label = productLabel(product.get("s"), product.get("n"));
+                if (!label.isEmpty()) {
+                    labels.add(label);
+                }
+            }
+        }
+        return labels.isEmpty() ? "All" : String.join(", ", labels);
+    }
+
     private static String productLabel(String segment, String name) {
         boolean hasSegment = segment != null && !segment.isBlank();
         boolean hasName = name != null && !name.isBlank();
@@ -660,7 +692,65 @@ public class TransportPerformanceController {
         if (hasSegment) {
             return segment.trim();
         }
-        return "All";
+        return "";
+    }
+
+    private static List<Map<String, String>> readProducts(String json) {
+        List<Map<String, String>> items = new ArrayList<>();
+        for (JsonNode node : readArray(json)) {
+            if (!node.isObject()) {
+                continue;
+            }
+            String name = node.path("n").asText("").trim();
+            String segment = node.path("s").asText("").trim();
+            if (name.isEmpty() && segment.isEmpty()) {
+                continue;
+            }
+            Map<String, String> item = new LinkedHashMap<>();
+            item.put("n", name);
+            item.put("s", segment);
+            items.add(item);
+        }
+        return items;
+    }
+
+    private static List<String> readAccounts(String json) {
+        List<String> names = new ArrayList<>();
+        for (JsonNode node : readArray(json)) {
+            String name = node.asText("").trim();
+            if (!name.isEmpty()) {
+                names.add(name);
+            }
+        }
+        return names;
+    }
+
+    private static List<JsonNode> readArray(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode node = JSON.readTree(json);
+            if (!node.isArray()) {
+                return List.of();
+            }
+            List<JsonNode> items = new ArrayList<>();
+            node.forEach(items::add);
+            return items;
+        } catch (JsonProcessingException e) {
+            throw new IllegalArgumentException("Filter values could not be read", e);
+        }
+    }
+
+    private static String writeJson(List<?> values) {
+        if (values == null || values.isEmpty()) {
+            return null;
+        }
+        try {
+            return JSON.writeValueAsString(values);
+        } catch (JsonProcessingException e) {
+            throw new IllegalArgumentException("Filter values could not be encoded", e);
+        }
     }
 
     private static String text(Object value) {

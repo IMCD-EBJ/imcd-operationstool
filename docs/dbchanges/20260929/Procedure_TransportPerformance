@@ -29,6 +29,9 @@ GO
         1 summary row, one row per month, then the current page of picks.
         @pickNumber and @orderNumber are the last parameters so an older
         caller that does not pass them still lines up.
+        @productName is one product name, or a JSON array of {"n","s"}
+        pairs (name and segment). @accountName is one account name, or a
+        JSON array of names. Several values match when any of them matches.
       Unmatched_Consult
         Carrier picks that do not match a sales-budget pick. Two result sets:
         the count, then the page. @pickNumber is the last parameter.
@@ -174,10 +177,10 @@ GO
 CREATE OR ALTER PROCEDURE [dbo].[TransportPerformance_Consult]
     @fromDate       date           = NULL,
     @toDate         date           = NULL,
-    @productName    nvarchar(400)  = NULL,
+    @productName    nvarchar(max)  = NULL,
     @productSegment nvarchar(200)  = NULL,
     @accountOwner   nvarchar(400)  = NULL,
-    @accountName    nvarchar(400)  = NULL,
+    @accountName    nvarchar(max)  = NULL,
     @carrierZone    nvarchar(10)   = NULL,
     @result         nvarchar(20)   = NULL,
     @sortColumn     nvarchar(40)   = NULL,
@@ -233,6 +236,51 @@ BEGIN
 
     IF @pageSize IS NULL OR @pageSize < 0
         SET @pageSize = 10;
+
+    -- One row per selected product. A JSON array carries several name/segment
+    -- pairs; a plain string is the single-value filter.
+    CREATE TABLE #selectedProducts (
+        ProductName    nvarchar(400) NULL,
+        ProductSegment nvarchar(200) NULL
+    );
+
+    IF @productName IS NOT NULL AND ISJSON(@productName) = 1 AND LEFT(LTRIM(@productName), 1) = N'['
+    BEGIN
+        INSERT INTO #selectedProducts (ProductName, ProductSegment)
+        SELECT
+            NULLIF(LTRIM(RTRIM(n)), N''),
+            NULLIF(LTRIM(RTRIM(s)), N'')
+        FROM OPENJSON(@productName)
+        WITH (
+            n nvarchar(400) N'$.n',
+            s nvarchar(200) N'$.s'
+        );
+
+        DELETE FROM #selectedProducts
+        WHERE ProductName IS NULL AND ProductSegment IS NULL;
+    END
+    ELSE IF @productName IS NOT NULL OR @productSegment IS NOT NULL
+    BEGIN
+        INSERT INTO #selectedProducts (ProductName, ProductSegment)
+        VALUES (@productName, @productSegment);
+    END
+
+    CREATE TABLE #selectedAccounts (
+        AccountName nvarchar(400) NOT NULL
+    );
+
+    IF @accountName IS NOT NULL AND ISJSON(@accountName) = 1 AND LEFT(LTRIM(@accountName), 1) = N'['
+    BEGIN
+        INSERT INTO #selectedAccounts (AccountName)
+        SELECT DISTINCT LTRIM(RTRIM(value))
+        FROM OPENJSON(@accountName)
+        WHERE NULLIF(LTRIM(RTRIM(value)), N'') IS NOT NULL;
+    END
+    ELSE IF @accountName IS NOT NULL
+    BEGIN
+        INSERT INTO #selectedAccounts (AccountName)
+        VALUES (@accountName);
+    END
 
     -- Chart target line. 98 until ConfigurationOperationsTool has a value.
     DECLARE @target decimal(5, 2) = 98;
@@ -463,22 +511,31 @@ BEGIN
     ) AS outcome
     -- Filters apply to the promised date, the representative account, the zone,
     -- any sales line of the pick for product, and contains-match for pick and order.
+    -- A pick matches when any selected account or any selected product matches.
     WHERE (@fromDate IS NULL OR (CAST(rep.PROMISEDDELIVERYDATE AS date) IS NOT NULL AND CAST(rep.PROMISEDDELIVERYDATE AS date) >= @fromDate))
       AND (@toDate IS NULL OR (CAST(rep.PROMISEDDELIVERYDATE AS date) IS NOT NULL AND CAST(rep.PROMISEDDELIVERYDATE AS date) <= @toDate))
       AND (@accountOwner IS NULL OR NULLIF(LTRIM(RTRIM(rep.ACCOUNT_OWNER_NAME)), N'') = @accountOwner)
-      AND (@accountName IS NULL OR NULLIF(LTRIM(RTRIM(rep.ACCOUNT_NAME)), N'') = @accountName)
+      AND (
+            NOT EXISTS (SELECT 1 FROM #selectedAccounts)
+            OR EXISTS (
+                SELECT 1
+                FROM #selectedAccounts AS af
+                WHERE af.AccountName = NULLIF(LTRIM(RTRIM(rep.ACCOUNT_NAME)), N'')
+            )
+      )
       AND (@carrierZone IS NULL OR zone.CarrierZone = @carrierZone)
       AND (
-            (@productName IS NULL AND @productSegment IS NULL)
+            NOT EXISTS (SELECT 1 FROM #selectedProducts)
             OR EXISTS (
                 SELECT 1
                 FROM dbo.SalesBudgetTable AS s
+                INNER JOIN #selectedProducts AS pf
+                    ON (pf.ProductName IS NULL OR LTRIM(RTRIM(s.PRODUCT_NAME)) = pf.ProductName)
+                   AND (
+                        pf.ProductSegment IS NULL
+                        OR LTRIM(RTRIM(CONVERT(nvarchar(200), s.PRODUCT_FULL_SEGMENTS_NUMBER))) = pf.ProductSegment
+                   )
                 WHERE s.PICKNUMBER = l.PickInt
-                  AND (@productName IS NULL OR LTRIM(RTRIM(s.PRODUCT_NAME)) = @productName)
-                  AND (
-                        @productSegment IS NULL
-                        OR LTRIM(RTRIM(CONVERT(nvarchar(200), s.PRODUCT_FULL_SEGMENTS_NUMBER))) = @productSegment
-                  )
             )
       )
       AND (@result IS NULL OR outcome.Result = @result)

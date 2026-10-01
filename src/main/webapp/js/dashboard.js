@@ -8,8 +8,8 @@ let unmatchedPage = 1;
 let sortColumn = "fechaEntrega";
 let sortDirection = "desc";
 let onTimeChart = null;
-let selectedProduct = null;
-let selectedAccount = null;
+let selectedProducts = [];
+let selectedAccounts = [];
 let productSearchTimer = null;
 let accountSearchTimer = null;
 
@@ -106,13 +106,10 @@ function toInputDate(date) {
 }
 
 function filterQuery() {
-    return {
+    const query = {
         fromDate: $("#fromDate").val(),
         toDate: $("#toDate").val(),
-        productName: selectedProduct ? selectedProduct.productName : "",
-        productSegment: selectedProduct ? selectedProduct.segmentNumber : "",
         accountOwner: $("#accountOwner").val(),
-        accountName: selectedAccount || "",
         carrierZone: $("#carrierZone").val(),
         result: $("#result").val(),
         pickNumber: $("#pickNumber").val(),
@@ -120,6 +117,18 @@ function filterQuery() {
         sortColumn: sortColumn,
         sortDirection: sortDirection
     };
+    if (selectedProducts.length) {
+        query.products = JSON.stringify(selectedProducts.map(function (product) {
+            return {
+                n: product.productName || "",
+                s: product.segmentNumber || ""
+            };
+        }));
+    }
+    if (selectedAccounts.length) {
+        query.accounts = JSON.stringify(selectedAccounts);
+    }
+    return query;
 }
 
 function loadFilters() {
@@ -143,11 +152,6 @@ function loadFilters() {
 function bindSearch(inputSelector, listSelector, kind) {
     $(inputSelector).on("input", function () {
         const term = $(this).val().trim();
-        if (kind === "product") {
-            selectedProduct = null;
-        } else {
-            selectedAccount = null;
-        }
         window.clearTimeout(kind === "product" ? productSearchTimer : accountSearchTimer);
         if (term.length < 2) {
             $(listSelector).attr("hidden", true).empty();
@@ -167,6 +171,13 @@ function bindSearch(inputSelector, listSelector, kind) {
         if (event.key === "Escape") {
             $(listSelector).attr("hidden", true);
         }
+        if (event.key === "Backspace" && $(this).val() === "") {
+            const items = kind === "product" ? selectedProducts : selectedAccounts;
+            if (items.length) {
+                items.pop();
+                renderChips(kind);
+            }
+        }
     });
 }
 
@@ -176,6 +187,10 @@ function searchSuggestions(kind, term, listSelector) {
         : URLBACKEND + "transport-performance/accounts";
     $.get(url, { term: term })
         .done(function (rows) {
+            const current = $(kind === "product" ? "#productSearch" : "#accountSearch").val().trim();
+            if (current !== term) {
+                return;
+            }
             renderSuggestions(kind, rows || [], listSelector);
         })
         .fail(function () {
@@ -186,35 +201,94 @@ function searchSuggestions(kind, term, listSelector) {
 function renderSuggestions(kind, rows, listSelector) {
     const list = $(listSelector);
     list.empty();
-    if (!rows.length) {
+    const available = (rows || []).filter(function (row) {
+        return !isSelected(kind, row);
+    });
+    if (!available.length) {
         list.append('<div class="tp-suggestion-empty">No matches</div>');
         list.removeAttr("hidden");
         return;
     }
-    rows.forEach(function (row) {
+    available.forEach(function (row) {
         const button = $("<button type='button'></button>");
         if (kind === "product") {
-            const label = productLabel(row);
-            button.text(label);
+            button.text(productLabel(row));
             button.on("click", function () {
-                selectedProduct = {
-                    segmentNumber: row.segmentNumber || "",
-                    productName: row.productName || ""
-                };
-                $("#productSearch").val(label);
-                list.attr("hidden", true);
+                addProduct(row);
+                list.attr("hidden", true).empty();
             });
         } else {
             button.text(row);
             button.on("click", function () {
-                selectedAccount = row;
-                $("#accountSearch").val(row);
-                list.attr("hidden", true);
+                addAccount(row);
+                list.attr("hidden", true).empty();
             });
         }
         list.append(button);
     });
     list.removeAttr("hidden");
+}
+
+function addProduct(row) {
+    const item = {
+        segmentNumber: row.segmentNumber || "",
+        productName: row.productName || ""
+    };
+    if (isSelected("product", item)) {
+        return;
+    }
+    window.clearTimeout(productSearchTimer);
+    selectedProducts.push(item);
+    $("#productSearch").val("").trigger("focus");
+    renderChips("product");
+}
+
+function addAccount(name) {
+    if (!name || isSelected("account", name)) {
+        return;
+    }
+    window.clearTimeout(accountSearchTimer);
+    selectedAccounts.push(name);
+    $("#accountSearch").val("").trigger("focus");
+    renderChips("account");
+}
+
+function isSelected(kind, row) {
+    if (kind === "product") {
+        const key = productKey(row);
+        return selectedProducts.some(function (item) { return productKey(item) === key; });
+    }
+    return selectedAccounts.indexOf(row) !== -1;
+}
+
+function productKey(item) {
+    return (item.segmentNumber || "") + "\u001f" + (item.productName || "");
+}
+
+function renderChips(kind) {
+    const isProduct = kind === "product";
+    const host = $(isProduct ? "#productChips" : "#accountChips");
+    const items = isProduct ? selectedProducts : selectedAccounts;
+    const input = $(isProduct ? "#productSearch" : "#accountSearch");
+    host.empty();
+    items.forEach(function (item, index) {
+        const labelText = isProduct ? productLabel(item) : item;
+        const chip = $('<span class="tp-chip"></span>');
+        const label = $('<span class="tp-chip-label"></span>').text(labelText).attr("title", labelText);
+        const remove = $('<button type="button" class="tp-chip-remove" aria-label="Remove">&times;</button>');
+        remove.on("click", function () {
+            items.splice(index, 1);
+            renderChips(kind);
+            input.trigger("focus");
+        });
+        chip.append(label, remove);
+        host.append(chip);
+    });
+    if (items.length) {
+        input.attr("placeholder", isProduct ? "Add another product" : "Add another account");
+    } else {
+        input.attr("placeholder", isProduct ? "Search by name or segment" : "Search account name");
+    }
 }
 
 function productLabel(item) {
@@ -230,10 +304,11 @@ function clearSearch(inputSelector, listSelector, kind) {
     $(inputSelector).val("");
     $(listSelector).attr("hidden", true).empty();
     if (kind === "product") {
-        selectedProduct = null;
+        selectedProducts = [];
     } else {
-        selectedAccount = null;
+        selectedAccounts = [];
     }
+    renderChips(kind);
 }
 
 function fillSelect(selector, placeholder, values) {
@@ -282,7 +357,11 @@ function loadDeliveries(refreshChart) {
     query.page = currentPage;
     query.pageSize = Number($("#pageSize").val()) || 10;
 
-    $.get(URLBACKEND + "transport-performance/consult", query)
+    $.ajax({
+        url: URLBACKEND + "transport-performance/consult",
+        data: query,
+        traditional: true
+    })
         .done(function (data) {
             if (refreshChart) {
                 renderSummary(data.summary || {});
@@ -591,7 +670,7 @@ function exportExcel() {
         return;
     }
     $("#btnExport").prop("disabled", true);
-    fetch(URLBACKEND + "transport-performance/export?" + $.param(filterQuery()), { credentials: "same-origin" })
+    fetch(URLBACKEND + "transport-performance/export?" + $.param(filterQuery(), true), { credentials: "same-origin" })
         .then(function (response) {
             if (!response.ok) {
                 throw new Error("export failed");
