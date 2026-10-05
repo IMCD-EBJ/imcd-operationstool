@@ -35,6 +35,7 @@ $(function () {
             sortColumn = column;
             sortDirection = column === "fechaEntrega" || column === "promisedDate"
                 || column === "transmitDate" || column === "earliestViableDate" || column === "daysLate"
+                || column === "weight"
                 ? "desc"
                 : "asc";
         }
@@ -51,7 +52,7 @@ $(function () {
 
     $("#btnClear").on("click", function () {
         applyDefaultDates();
-        $("#accountOwner, #carrierZone, #pickNumber, #orderNumber").val("");
+        $("#accountOwner, #carrierZone, #pickNumber, #orderNumber, #weightBand").val("");
         $("#result").val("All");
         $("#pageSize").val("10");
         $("#unmatchedPageSize").val("10");
@@ -114,6 +115,7 @@ function filterQuery() {
         result: $("#result").val(),
         pickNumber: $("#pickNumber").val(),
         orderNumber: $("#orderNumber").val(),
+        weightBand: $("#weightBand").val(),
         sortColumn: sortColumn,
         sortDirection: sortDirection
     };
@@ -351,7 +353,7 @@ function loadDashboard() {
 
 function loadDeliveries(refreshChart) {
     $("#btnApply").prop("disabled", true);
-    $("#deliveriesBody").html('<tr><td colspan="13" class="text-muted">Loading…</td></tr>');
+    $("#deliveriesBody").html('<tr><td colspan="14" class="text-muted">Loading…</td></tr>');
 
     const query = filterQuery();
     query.page = currentPage;
@@ -374,7 +376,7 @@ function loadDeliveries(refreshChart) {
                 renderSummary({});
                 renderChart([], {});
             }
-            $("#deliveriesBody").html('<tr><td colspan="13" class="text-danger">Deliveries could not be loaded.</td></tr>');
+            $("#deliveriesBody").html('<tr><td colspan="14" class="text-danger">Deliveries could not be loaded.</td></tr>');
             $("#showingLabel").text("");
             $("#pager").empty();
             showPageAlert("The dashboard could not be loaded.");
@@ -557,7 +559,7 @@ function renderTable(rows, total, pageSize) {
     const body = $("#deliveriesBody");
     body.empty();
     if (!rows.length) {
-        body.append('<tr><td colspan="13" class="text-muted">No deliveries match these filters.</td></tr>');
+        body.append('<tr><td colspan="14" class="text-muted">No deliveries match these filters.</td></tr>');
     } else {
         rows.forEach(function (row) {
             const result = row.result
@@ -567,6 +569,9 @@ function renderTable(rows, total, pageSize) {
             const daysLate = row.daysLate === null || row.daysLate === undefined
                 ? ""
                 : escapeHtml(formatInteger(row.daysLate));
+            const pickWeight = row.pickWeightKg === null || row.pickWeightKg === undefined
+                ? ""
+                : escapeHtml(formatInteger(row.pickWeightKg));
             const fechaClass = row.result === "Late" && !row.ncrOnly ? " tp-late-date" : "";
             body.append(
                 "<tr>"
@@ -581,6 +586,7 @@ function renderTable(rows, total, pageSize) {
                 + '<td class="tp-col-compact' + fechaClass + '">' + escapeHtml(formatDate(row.fechaEntrega)) + "</td>"
                 + '<td class="tp-col-tight">' + (row.timingNcr ? '<span class="tp-ncr-yes">Yes</span>' : "No") + "</td>"
                 + '<td class="tp-col-tight">' + daysLate + "</td>"
+                + '<td class="tp-col-compact">' + pickWeight + "</td>"
                 + "<td>" + result + "</td>"
                 + "<td class=\"tp-col-eye\">" + pickDetailsLink(row.pickNumber) + "</td>"
                 + "</tr>"

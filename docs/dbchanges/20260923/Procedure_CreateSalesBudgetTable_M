@@ -32,7 +32,10 @@ Transport Performance dashboard reads:
     PICKNUMBER, ORDER_NUMBER, PROMISEDDELIVERYDATE,
     ACCOUNT_NAME, ACCOUNT_OWNER_NAME,
     SHIP_TO_COUNTRY_CODE, SHIP_TO_POSTAL_CODE,
-    PRODUCT_NAME, PRODUCT_FULL_SEGMENTS_NUMBER.
+    PRODUCT_NAME, PRODUCT_FULL_SEGMENTS_NUMBER,
+    QUANTITYKG.
+QUANTITYKG is stored as an integer number of kilograms. A source value such as
+2250.000000000000 becomes 2250.
 
 TARGET TABLES:
 ----------------------------------------------------------------------------------------------
@@ -110,6 +113,8 @@ BEGIN TRY
       ,[SHIP_TO_POSTAL_CODE]
       ,[PRODUCT_NAME]
       ,[PRODUCT_FULL_SEGMENTS_NUMBER]
+      ,INCOMETYPE
+      ,CONVERT(int, ROUND([QUANTITYKG], 0)) AS [QUANTITYKG]
     INTO #TEMP_SALESBUDGET
     FROM [MOSAIC].[dbo].[SalesBudgetTable]
     WHERE REPORTINGDATE >= '2026-01-01'

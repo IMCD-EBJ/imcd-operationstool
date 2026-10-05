@@ -66,6 +66,14 @@
                                 <option value="Late">Late</option>
                             </select>
                         </div>
+                        <div class="form-group">
+                            <label for="weightBand">Pick weight</label>
+                            <select id="weightBand" class="form-control">
+                                <option value="">All weights</option>
+                                <option value="more">More than 2 tonnes</option>
+                                <option value="less">2 tonnes or less</option>
+                            </select>
+                        </div>
                     </div>
                     <div class="form-row tp-filter-row align-items-end">
                         <div class="form-group">
@@ -173,7 +181,7 @@
                                     <th><button type="button" class="tp-sort" data-sort="order">Order <i
                                                 class="fas fa-sort tp-sort-icon"></i></button></th>
                                     <th class="tp-col-product"><button type="button" class="tp-sort"
-                                            data-sort="product">Product <i
+                                            data-sort="product">Product(s) <i
                                                 class="fas fa-sort tp-sort-icon"></i></button></th>
                                     <th><button type="button" class="tp-sort" data-sort="accountName">Account Name <i
                                                 class="fas fa-sort tp-sort-icon"></i></button></th>
@@ -195,6 +203,9 @@
                                     <th class="tp-col-tight"><button type="button" class="tp-sort"
                                             data-sort="daysLate">Days Late <i
                                                 class="fas fa-sort tp-sort-icon"></i></button></th>
+                                    <th class="tp-col-compact"><button type="button" class="tp-sort"
+                                            data-sort="weight">Pick weight (kg) <i
+                                                class="fas fa-sort tp-sort-icon"></i></button></th>
                                     <th><button type="button" class="tp-sort" data-sort="result">Result <i
                                                 class="fas fa-sort tp-sort-icon"></i></button></th>
                                     <th class="tp-col-eye"><span class="sr-only">Details</span></th>
@@ -202,7 +213,7 @@
                             </thead>
                             <tbody id="deliveriesBody">
                                 <tr>
-                                    <td colspan="13" class="text-muted">Loading…</td>
+                                    <td colspan="14" class="text-muted">Loading…</td>
                                 </tr>
                             </tbody>
                         </table>

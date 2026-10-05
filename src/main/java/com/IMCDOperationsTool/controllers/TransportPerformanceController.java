@@ -133,6 +133,7 @@ public class TransportPerformanceController {
             @RequestParam(required = false) String result,
             @RequestParam(required = false) String pickNumber,
             @RequestParam(required = false) String orderNumber,
+            @RequestParam(required = false) String weightBand,
             @RequestParam(required = false) String sortColumn,
             @RequestParam(required = false) String sortDirection,
             @RequestParam(defaultValue = "1") int page,
@@ -140,7 +141,7 @@ public class TransportPerformanceController {
         try {
             DashboardData data = load(fromDate, toDate, writeJson(readProducts(products)), null,
                     accountOwner, writeJson(readAccounts(accounts)),
-                    carrierZone, result, pickNumber, orderNumber, sortColumn, sortDirection, page, pageSize);
+                    carrierZone, result, pickNumber, orderNumber, weightBand, sortColumn, sortDirection, page, pageSize);
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("summary", data.summary);
             body.put("months", data.months);
@@ -193,6 +194,7 @@ public class TransportPerformanceController {
             @RequestParam(required = false) String result,
             @RequestParam(required = false) String pickNumber,
             @RequestParam(required = false) String orderNumber,
+            @RequestParam(required = false) String weightBand,
             @RequestParam(required = false) String sortColumn,
             @RequestParam(required = false) String sortDirection) {
         try {
@@ -200,10 +202,10 @@ public class TransportPerformanceController {
             List<String> accountItems = readAccounts(accounts);
             DashboardData data = load(fromDate, toDate, writeJson(productItems), null,
                     accountOwner, writeJson(accountItems),
-                    carrierZone, result, pickNumber, orderNumber, sortColumn, sortDirection, 1, 0);
+                    carrierZone, result, pickNumber, orderNumber, weightBand, sortColumn, sortDirection, 1, 0);
             ExcelExportResult file = excelExportService.export(workbook(
                     fromDate, toDate, productItems, accountOwner, accountItems, carrierZone, result,
-                    pickNumber, orderNumber, data));
+                    pickNumber, orderNumber, weightBand, data));
             return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.fileName() + "\"")
                     .contentType(MediaType.parseMediaType(file.contentType()))
@@ -235,11 +237,11 @@ public class TransportPerformanceController {
 
     private DashboardData load(LocalDate fromDate, LocalDate toDate, String productName, String productSegment,
             String accountOwner, String accountName, String carrierZone, String result,
-            String pickNumber, String orderNumber, String sortColumn, String sortDirection,
+            String pickNumber, String orderNumber, String weightBand, String sortColumn, String sortDirection,
             int page, int pageSize) {
         return jdbcTemplate.execute((ConnectionCallback<DashboardData>) connection -> {
             try (CallableStatement cs = connection.prepareCall(
-                    "{call dbo.TransportPerformance_Consult(?,?,?,?,?,?,?,?,?,?,?,?,?,?)}")) {
+                    "{call dbo.TransportPerformance_Consult(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)}")) {
                 setDate(cs, 1, fromDate);
                 setDate(cs, 2, toDate);
                 setString(cs, 3, productName);
@@ -254,6 +256,7 @@ public class TransportPerformanceController {
                 cs.setInt(12, Math.max(pageSize, 0));
                 setString(cs, 13, pickNumber);
                 setString(cs, 14, orderNumber);
+                setString(cs, 15, weightBand(weightBand));
 
                 DashboardData data = new DashboardData();
                 boolean hasResults = cs.execute();
@@ -385,7 +388,7 @@ public class TransportPerformanceController {
 
     private ExcelExportRequest workbook(LocalDate fromDate, LocalDate toDate, List<Map<String, String>> products,
             String accountOwner, List<String> accountName,
-            String carrierZone, String result, String pickNumber, String orderNumber,
+            String carrierZone, String result, String pickNumber, String orderNumber, String weightBand,
             DashboardData data) {
         List<ExcelLabelValue> metadata = new ArrayList<>();
         metadata.add(new ExcelLabelValue("From promised date", fromDate == null ? "" : DAY.format(fromDate)));
@@ -397,6 +400,7 @@ public class TransportPerformanceController {
         metadata.add(new ExcelLabelValue("Result", blankToAll(result)));
         metadata.add(new ExcelLabelValue("Pick number", blankToAll(pickNumber)));
         metadata.add(new ExcelLabelValue("Order", blankToAll(orderNumber)));
+        metadata.add(new ExcelLabelValue("Pick weight", weightLabel(weightBand)));
         metadata.add(new ExcelLabelValue("Total deliveries", data.summary.get("totalCount"), ExcelColumnType.INTEGER));
         metadata.add(new ExcelLabelValue("On time %", data.summary.get("onTimePercent"), ExcelColumnType.DECIMAL));
         metadata.add(new ExcelLabelValue("Late %", data.summary.get("latePercent"), ExcelColumnType.DECIMAL));
@@ -415,6 +419,7 @@ public class TransportPerformanceController {
                 "Carrier Delivery Date",
                 "Timing NCR",
                 "Days late",
+                "Pick weight (kg)",
                 "Result");
         List<ExcelColumnType> types = List.of(
                 ExcelColumnType.STRING,
@@ -427,6 +432,7 @@ public class TransportPerformanceController {
                 ExcelColumnType.DATE,
                 ExcelColumnType.DATE,
                 ExcelColumnType.STRING,
+                ExcelColumnType.INTEGER,
                 ExcelColumnType.INTEGER,
                 ExcelColumnType.STRING);
 
@@ -444,6 +450,7 @@ public class TransportPerformanceController {
                     parseDate(row.get("fechaEntrega")),
                     Boolean.TRUE.equals(row.get("timingNcr")) ? "Yes" : "No",
                     row.get("daysLate") == null ? "" : row.get("daysLate"),
+                    row.get("pickWeightKg") == null ? "" : row.get("pickWeightKg"),
                     text(row.get("result"))));
         }
 
@@ -500,6 +507,8 @@ public class TransportPerformanceController {
         row.put("timingNcr", rs.getBoolean("TimingNcr"));
         int daysLate = rs.getInt("DaysLate");
         row.put("daysLate", rs.wasNull() ? null : daysLate);
+        long pickWeightKg = rs.getLong("PickWeightKg");
+        row.put("pickWeightKg", rs.wasNull() ? null : pickWeightKg);
         row.put("ncrOnly", rs.getBoolean("NcrOnly"));
         row.put("result", rs.getString("Result"));
         return row;
@@ -536,6 +545,8 @@ public class TransportPerformanceController {
         row.put("segmentNumber", rs.getString("SegmentNumber"));
         row.put("orderNumber", rs.getString("OrderNumber"));
         row.put("promisedDate", readDate(rs, "PromisedDate"));
+        int quantityKg = rs.getInt("QuantityKg");
+        row.put("quantityKg", rs.wasNull() ? null : quantityKg);
         return row;
     }
 
@@ -641,7 +652,7 @@ public class TransportPerformanceController {
         return switch (value) {
             case "pick", "order", "product", "accountName", "accountOwner",
                     "promisedDate", "transmitDate", "earliestViableDate", "fechaEntrega",
-                    "timingNcr", "daysLate", "result" ->
+                    "timingNcr", "daysLate", "weight", "result" ->
                 value;
             default -> "fechaEntrega";
         };
@@ -653,6 +664,27 @@ public class TransportPerformanceController {
 
     private static String blankToAll(String value) {
         return value == null || value.isBlank() ? "All" : value.trim();
+    }
+
+    private static String weightBand(String value) {
+        if (value == null) {
+            return null;
+        }
+        return switch (value.trim().toLowerCase()) {
+            case "more", "less" -> value.trim().toLowerCase();
+            default -> null;
+        };
+    }
+
+    private static String weightLabel(String value) {
+        String band = weightBand(value);
+        if ("more".equals(band)) {
+            return "More than 2 tonnes";
+        }
+        if ("less".equals(band)) {
+            return "2 tonnes or less";
+        }
+        return "All";
     }
 
     private static String joinLabels(List<String> values) {
