@@ -129,12 +129,12 @@ function carrierTable(rows) {
         return '<div class="text-muted">No carrier rows for this pick.</div>';
     }
     return table(
-        ["Pick number", "Import", "Imported", "Code", "Status", "SKU", "Fecha Entrega", "Client", "Address", "Locality", "Postal code", "Country"],
+        ["Pick number", "Imported", "File identifier", "Code", "Status", "SKU", "Fecha Entrega", "Client", "Address", "Locality", "Postal code", "Country"],
         rows.map(function (row) {
             return [
                 row.pickNumber,
-                row.importId,
                 formatDateTime(row.importDate),
+                row.fileIdentifier,
                 row.carrierCode,
                 row.status,
                 row.sku,

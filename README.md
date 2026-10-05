@@ -99,7 +99,7 @@ Base path: `/operationstool`.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/import-reports/branchPlants` | Branch plants for the import form |
-| `POST` | `/import-reports/carrier` | Stage the workbook and load carrier rows (`file`, `brpId`, `localAdUser`, `mail`, `userName`) |
+| `POST` | `/import-reports/carrier` | Stage the workbook and load carrier rows (`file`, `brpId`, `fileIdentifier`, `localAdUser`, `mail`, `userName`) |
 | `GET` | `/import-reports/getImportReportsCombo` | Import report catalog |
 | `POST` | `/import-reports/import` | Generic workbook import (`file`, `reportId`, `userLogged`) |
 | `GET` | `/import-reports/alertMessage` | Alert copy from configuration |

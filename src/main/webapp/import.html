@@ -23,7 +23,7 @@
                     <div class="page-hero-badge mr-3"><i class="fas fa-file-import"></i></div>
                     <div>
                         <h1 class="page-hero-title mb-0">Carrier import</h1>
-                        <div class="page-hero-subtitle">Select a branch plant and upload an Excel file</div>
+                        <div class="page-hero-subtitle">Select a branch plant, name the file, and upload an Excel file</div>
                     </div>
                 </div>
             </div>
@@ -38,6 +38,11 @@
                             <select id="branchPlant" class="form-control">
                                 <option value="">Select a branch plant</option>
                             </select>
+                        </div>
+                        <div class="form-group col-md-3">
+                            <label for="fileIdentifier">File identifier</label>
+                            <input id="fileIdentifier" type="text" class="form-control" maxlength="100"
+                                placeholder="August2026" autocomplete="off">
                         </div>
                     </div>
                     <div id="formatBanner" class="uf-format-banner">
@@ -170,16 +175,30 @@
                 }
             });
 
+            function fileIdentifierValue() {
+                return $("#fileIdentifier").val().trim();
+            }
+
             document.getElementById("uploadCard").addEventListener("click", function (event) {
                 const button = event.target.closest(".fileinput-upload, .kv-file-upload");
-                if (!button || $("#branchPlant").val()) {
+                if (!button) {
                     return;
                 }
-                event.preventDefault();
-                event.stopPropagation();
-                showConfiguredAlert(
-                    "CARRIER_BRANCH_REQUIRED", null, "danger",
-                    "Branch plant required", "Select a branch plant before uploading.");
+                if (!$("#branchPlant").val()) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    showConfiguredAlert(
+                        "CARRIER_BRANCH_REQUIRED", null, "danger",
+                        "Branch plant required", "Select a branch plant before uploading.");
+                    return;
+                }
+                if (!fileIdentifierValue()) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    showConfiguredAlert(
+                        "CARRIER_FILE_IDENTIFIER_REQUIRED", null, "danger",
+                        "File identifier required", "Enter a file identifier before uploading.");
+                }
             }, true);
 
             $("#file").fileinput({
@@ -212,6 +231,7 @@
                 uploadExtraData: function () {
                     return {
                         brpId: $("#branchPlant").val(),
+                        fileIdentifier: fileIdentifierValue(),
                         localAdUser: session.UOT_LocalADUser || "",
                         mail: session.UOT_Mail || "",
                         userName: session.UOT_UserName || ""
@@ -224,9 +244,15 @@
                         "Branch plant required", "Select a branch plant before uploading.");
                     return;
                 }
+                if (!fileIdentifierValue()) {
+                    showConfiguredAlert(
+                        "CARRIER_FILE_IDENTIFIER_REQUIRED", null, "danger",
+                        "File identifier required", "Enter a file identifier before uploading.");
+                    return;
+                }
                 showConfiguredAlert("CARRIER_UPLOADING", null, "info", "Uploading", "The file is being imported.");
             }).on("filepreajax", function () {
-                if ($("#branchPlant").val()) {
+                if ($("#branchPlant").val() && fileIdentifierValue()) {
                     return;
                 }
                 const plugin = $("#file").data("fileinput");

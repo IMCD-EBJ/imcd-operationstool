@@ -7,7 +7,7 @@ GO
     The workbook is loaded by imcd-platform-lib into a staging table.
     RC_StoreName dbo.Carrier_Import_Validate checks the staging rows.
     dbo.Carrier_Imported_Data_Load copies those rows into Carrier_Imported_Data
-    and adds the import id, import date, user, and branch plant.
+    and adds the import id, import date, user, branch plant, and file identifier.
     dbo.Configuration_AlertMessage holds the fixed texts shown on the page.
 */
 
@@ -22,6 +22,7 @@ BEGIN
         UOT_Mail          NVARCHAR(200)     NULL,
         UOT_UserName      NVARCHAR(200)     NULL,
         BRP_Id            INT               NOT NULL,
+        File_Identifier   NVARCHAR(100)     NULL,
         Carrier_Code      NVARCHAR(255)     NULL,
         Pick_Number       NVARCHAR(255)     NULL,
         Status            NVARCHAR(255)     NULL,
@@ -34,6 +35,13 @@ BEGIN
         Postal_Code       NVARCHAR(255)     NULL,
         CONSTRAINT PK_Carrier_Imported_Data PRIMARY KEY CLUSTERED (ID)
     );
+END
+GO
+
+IF COL_LENGTH(N'dbo.Carrier_Imported_Data', N'File_Identifier') IS NULL
+BEGIN
+    ALTER TABLE dbo.Carrier_Imported_Data
+        ADD File_Identifier NVARCHAR(100) NULL;
 END
 GO
 
@@ -107,14 +115,15 @@ END
 GO
 
 CREATE OR ALTER PROCEDURE [dbo].[Carrier_Imported_Data_Load]
-    @tableName     sysname,
-    @brpId         int,
-    @localAdUser   nvarchar(200),
-    @mail          nvarchar(200),
-    @userName      nvarchar(200),
-    @errorMessage  nvarchar(max) OUTPUT,
-    @importId      int OUTPUT,
-    @rowCount      int OUTPUT
+    @tableName       sysname,
+    @brpId           int,
+    @localAdUser     nvarchar(200),
+    @mail            nvarchar(200),
+    @userName        nvarchar(200),
+    @fileIdentifier  nvarchar(100),
+    @errorMessage    nvarchar(max) OUTPUT,
+    @importId        int OUTPUT,
+    @rowCount        int OUTPUT
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -143,14 +152,21 @@ BEGIN
         RETURN;
     END
 
+    SET @fileIdentifier = NULLIF(LTRIM(RTRIM(@fileIdentifier)), N'');
+    IF @fileIdentifier IS NULL
+    BEGIN
+        SET @errorMessage = N'ERROR: Enter a file identifier before uploading.';
+        RETURN;
+    END
+
     DECLARE @nextId int = ISNULL((SELECT MAX(Import_Id) FROM dbo.Carrier_Imported_Data), 0) + 1;
     DECLARE @importedAt datetime = GETDATE();
     DECLARE @sql nvarchar(max) = N'
         INSERT INTO dbo.Carrier_Imported_Data
-            (Import_Id, Import_Date, UOT_LocalADUser, UOT_Mail, UOT_UserName, BRP_Id,
+            (Import_Id, Import_Date, UOT_LocalADUser, UOT_Mail, UOT_UserName, BRP_Id, File_Identifier,
              Carrier_Code, Pick_Number, Status, SKU, Delivery_Date, Client, Locality, Address, Country, Postal_Code)
         SELECT
-            @nextId, @importedAt, @localAdUser, @mail, @userName, @brpId,
+            @nextId, @importedAt, @localAdUser, @mail, @userName, @brpId, @fileIdentifier,
             Carrier_Code, Pick_Number, Status, SKU, Delivery_Date, Client, Locality, Address, Country, Postal_Code
         FROM dbo.' + QUOTENAME(@tableName) + N';
         SET @inserted = @@ROWCOUNT;';
@@ -158,13 +174,14 @@ BEGIN
     DECLARE @inserted int;
     EXEC sys.sp_executesql
         @sql,
-        N'@nextId int, @importedAt datetime, @localAdUser nvarchar(200), @mail nvarchar(200), @userName nvarchar(200), @brpId int, @inserted int OUTPUT',
+        N'@nextId int, @importedAt datetime, @localAdUser nvarchar(200), @mail nvarchar(200), @userName nvarchar(200), @brpId int, @fileIdentifier nvarchar(100), @inserted int OUTPUT',
         @nextId = @nextId,
         @importedAt = @importedAt,
         @localAdUser = @localAdUser,
         @mail = @mail,
         @userName = @userName,
         @brpId = @brpId,
+        @fileIdentifier = @fileIdentifier,
         @inserted = @inserted OUTPUT;
 
     SET @rowCount = ISNULL(@inserted, 0);
@@ -276,6 +293,7 @@ GO
 MERGE dbo.Configuration_AlertMessage AS target
 USING (VALUES
     (N'CARRIER_BRANCH_REQUIRED', N'Branch plant required', N'Select a branch plant before uploading.', N'danger', NULL, NULL, NULL, NULL, N'Error'),
+    (N'CARRIER_FILE_IDENTIFIER_REQUIRED', N'File identifier required', N'Enter a file identifier before uploading.', N'danger', NULL, NULL, NULL, NULL, N'Error'),
     (N'CARRIER_BRANCH_LOAD', N'Branch plants', N'Branch plants could not be loaded.', N'danger', NULL, NULL, NULL, NULL, N'Error'),
     (N'CARRIER_UPLOADING', N'Uploading', N'The file is being imported.', N'info', NULL, NULL, NULL, NULL, N'Info'),
     (N'CARRIER_UPLOAD_OK', N'Upload complete', N'Import {importId} stored {rowCount} row(s).', N'success', NULL, NULL, NULL, NULL, N'Success'),

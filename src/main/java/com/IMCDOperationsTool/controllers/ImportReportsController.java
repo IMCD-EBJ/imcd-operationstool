@@ -150,6 +150,7 @@ public class ImportReportsController {
     @PostMapping("carrier")
     public ResponseEntity<Object> importCarrier(@RequestParam("file") MultipartFile file,
             @RequestParam(value = "brpId", required = false) String brpId,
+            @RequestParam(value = "fileIdentifier", required = false) String fileIdentifier,
             @RequestParam("localAdUser") String localAdUser,
             @RequestParam("mail") String mail,
             @RequestParam("userName") String userName) {
@@ -157,13 +158,20 @@ public class ImportReportsController {
             if (brpId == null || brpId.isBlank()) {
                 return new ResponseEntity<>(HttpStatus.BAD_REQUEST);
             }
+            String identifier = fileIdentifier == null ? "" : fileIdentifier.trim();
+            if (identifier.isEmpty()) {
+                return errorBody(HttpStatus.BAD_REQUEST, "Enter a file identifier before uploading.");
+            }
+            if (identifier.length() > 100) {
+                return errorBody(HttpStatus.BAD_REQUEST, "The file identifier must be 100 characters or fewer.");
+            }
             int branchPlantId = Integer.parseInt(brpId.trim());
             LOG.info("Carrier import started for branch plant {} by {}", branchPlantId, localAdUser);
             int reportId = carrierReportId();
             ExcelImportResult staged = excelImportService.importWorkbook(
                     new ExcelImportRequest(file.getInputStream(), file.getOriginalFilename(), reportId, localAdUser));
             Map<String, Object> loaded = loadCarrierRows(staged.tableName(), branchPlantId, localAdUser, mail,
-                    userName);
+                    userName, identifier);
             try {
                 fileService.saveFile(staged.tableName() + ".xlsx", file);
             } catch (Exception ignored) {
@@ -232,24 +240,26 @@ public class ImportReportsController {
     }
 
     private Map<String, Object> loadCarrierRows(String tableName, Integer brpId, String localAdUser,
-            String mail, String userName) {
+            String mail, String userName, String fileIdentifier) {
         List<SqlParameter> parameters = new ArrayList<>();
         parameters.add(new SqlParameter("tableName", Types.NVARCHAR));
         parameters.add(new SqlParameter("brpId", Types.INTEGER));
         parameters.add(new SqlParameter("localAdUser", Types.NVARCHAR));
         parameters.add(new SqlParameter("mail", Types.NVARCHAR));
         parameters.add(new SqlParameter("userName", Types.NVARCHAR));
+        parameters.add(new SqlParameter("fileIdentifier", Types.NVARCHAR));
         parameters.add(new SqlOutParameter("errorMessage", Types.NVARCHAR));
         parameters.add(new SqlOutParameter("importId", Types.INTEGER));
         parameters.add(new SqlOutParameter("rowCount", Types.INTEGER));
 
         Map<String, Object> result = jdbcTemplate.call(connection -> {
-            CallableStatement cs = connection.prepareCall("{call dbo.Carrier_Imported_Data_Load(?,?,?,?,?,?,?,?)}");
+            CallableStatement cs = connection.prepareCall("{call dbo.Carrier_Imported_Data_Load(?,?,?,?,?,?,?,?,?)}");
             cs.setString("tableName", tableName);
             cs.setInt("brpId", brpId);
             cs.setString("localAdUser", localAdUser);
             cs.setString("mail", mail);
             cs.setString("userName", userName);
+            cs.setString("fileIdentifier", fileIdentifier);
             cs.registerOutParameter("errorMessage", Types.NVARCHAR);
             cs.registerOutParameter("importId", Types.INTEGER);
             cs.registerOutParameter("rowCount", Types.INTEGER);

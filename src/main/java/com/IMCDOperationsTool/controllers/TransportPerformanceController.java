@@ -544,6 +544,7 @@ public class TransportPerformanceController {
         row.put("pickNumber", rs.getString("PickNumber"));
         row.put("importId", rs.getInt("ImportId"));
         row.put("importDate", readDateTime(rs, "ImportDate"));
+        row.put("fileIdentifier", rs.getString("FileIdentifier"));
         row.put("carrierCode", rs.getString("CarrierCode"));
         row.put("status", rs.getString("Status"));
         row.put("sku", rs.getString("Sku"));
