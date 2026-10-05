@@ -9,20 +9,7 @@
         <i class="fas fa-home"></i>
     </button>
     <div class="rail-scroll">
-        <ul class="list-unstyled components">
-            <li>
-                <a href="import.html" class="level1-link">
-                    <span class="icon"><i class="fas fa-file-import"></i></span>
-                    <span class="label">Import</span>
-                </a>
-            </li>
-            <li>
-                <a href="dashboard.html" class="level1-link">
-                    <span class="icon"><i class="fas fa-tachometer-alt"></i></span>
-                    <span class="label">Dashboard</span>
-                </a>
-            </li>
-        </ul>
+        <ul id="menu" class="list-unstyled components"></ul>
     </div>
 </nav>
 <style>
@@ -54,8 +41,12 @@
                 if (window.toggleSidebar) window.toggleSidebar();
             };
         }
-        $(document).on("click", "#btnHomeIndex", function () {
-            window.location.href = "import.html";
-        });
+        const home = document.getElementById("btnHomeIndex");
+        if (home) {
+            home.onclick = function (event) {
+                event.preventDefault();
+                window.location.href = "dashboard.html";
+            };
+        }
     })();
 </script>
