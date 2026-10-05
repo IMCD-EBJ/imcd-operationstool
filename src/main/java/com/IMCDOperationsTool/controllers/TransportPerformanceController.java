@@ -137,16 +137,21 @@ public class TransportPerformanceController {
             @RequestParam(required = false) String sortColumn,
             @RequestParam(required = false) String sortDirection,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int pageSize) {
+            @RequestParam(defaultValue = "10") int pageSize,
+            @RequestParam(defaultValue = "1") int cancelledPage,
+            @RequestParam(defaultValue = "10") int cancelledPageSize) {
         try {
             DashboardData data = load(fromDate, toDate, writeJson(readProducts(products)), null,
                     accountOwner, writeJson(readAccounts(accounts)),
-                    carrierZone, result, pickNumber, orderNumber, weightBand, sortColumn, sortDirection, page, pageSize);
+                    carrierZone, result, pickNumber, orderNumber, weightBand, sortColumn, sortDirection, page, pageSize,
+                    cancelledPage, cancelledPageSize);
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("summary", data.summary);
             body.put("months", data.months);
             body.put("rows", data.rows);
             body.put("total", data.total);
+            body.put("cancelledRows", data.cancelledRows);
+            body.put("cancelledTotal", data.cancelledTotal);
             return new ResponseEntity<>(body, HttpStatus.OK);
         } catch (RuntimeException e) {
             LOG.error("Transport performance consult failed", e);
@@ -202,7 +207,8 @@ public class TransportPerformanceController {
             List<String> accountItems = readAccounts(accounts);
             DashboardData data = load(fromDate, toDate, writeJson(productItems), null,
                     accountOwner, writeJson(accountItems),
-                    carrierZone, result, pickNumber, orderNumber, weightBand, sortColumn, sortDirection, 1, 0);
+                    carrierZone, result, pickNumber, orderNumber, weightBand, sortColumn, sortDirection, 1, 0,
+                    1, 10);
             ExcelExportResult file = excelExportService.export(workbook(
                     fromDate, toDate, productItems, accountOwner, accountItems, carrierZone, result,
                     pickNumber, orderNumber, weightBand, data));
@@ -238,10 +244,10 @@ public class TransportPerformanceController {
     private DashboardData load(LocalDate fromDate, LocalDate toDate, String productName, String productSegment,
             String accountOwner, String accountName, String carrierZone, String result,
             String pickNumber, String orderNumber, String weightBand, String sortColumn, String sortDirection,
-            int page, int pageSize) {
+            int page, int pageSize, int cancelledPage, int cancelledPageSize) {
         return jdbcTemplate.execute((ConnectionCallback<DashboardData>) connection -> {
             try (CallableStatement cs = connection.prepareCall(
-                    "{call dbo.TransportPerformance_Consult(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)}")) {
+                    "{call dbo.TransportPerformance_Consult(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)}")) {
                 setDate(cs, 1, fromDate);
                 setDate(cs, 2, toDate);
                 setString(cs, 3, productName);
@@ -257,6 +263,8 @@ public class TransportPerformanceController {
                 setString(cs, 13, pickNumber);
                 setString(cs, 14, orderNumber);
                 setString(cs, 15, weightBand(weightBand));
+                cs.setInt(16, Math.max(cancelledPage, 1));
+                cs.setInt(17, Math.max(cancelledPageSize, 0));
 
                 DashboardData data = new DashboardData();
                 boolean hasResults = cs.execute();
@@ -279,6 +287,20 @@ public class TransportPerformanceController {
                     try (ResultSet rs = cs.getResultSet()) {
                         while (rs.next()) {
                             data.rows.add(mapRow(rs));
+                        }
+                    }
+                }
+                if (cs.getMoreResults()) {
+                    try (ResultSet rs = cs.getResultSet()) {
+                        if (rs.next()) {
+                            data.cancelledTotal = rs.getInt("CancelledCount");
+                        }
+                    }
+                }
+                if (cs.getMoreResults()) {
+                    try (ResultSet rs = cs.getResultSet()) {
+                        while (rs.next()) {
+                            data.cancelledRows.add(mapRow(rs));
                         }
                     }
                 }
@@ -547,6 +569,7 @@ public class TransportPerformanceController {
         row.put("promisedDate", readDate(rs, "PromisedDate"));
         int quantityKg = rs.getInt("QuantityKg");
         row.put("quantityKg", rs.wasNull() ? null : quantityKg);
+        row.put("incomeType", rs.getString("IncomeType"));
         return row;
     }
 
@@ -809,5 +832,7 @@ public class TransportPerformanceController {
         private final List<Map<String, Object>> months = new ArrayList<>();
         private final List<Map<String, Object>> rows = new ArrayList<>();
         private int total;
+        private final List<Map<String, Object>> cancelledRows = new ArrayList<>();
+        private int cancelledTotal;
     }
 }

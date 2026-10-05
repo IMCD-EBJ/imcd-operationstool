@@ -4,6 +4,7 @@ if (!session) {
 }
 
 let currentPage = 1;
+let cancelledPage = 1;
 let unmatchedPage = 1;
 let sortColumn = "fechaEntrega";
 let sortDirection = "desc";
@@ -40,12 +41,14 @@ $(function () {
                 : "asc";
         }
         currentPage = 1;
+        cancelledPage = 1;
         updateSortIcons();
         loadDeliveries();
     });
 
     $("#btnApply").on("click", function () {
         currentPage = 1;
+        cancelledPage = 1;
         unmatchedPage = 1;
         loadDashboard();
     });
@@ -55,13 +58,14 @@ $(function () {
         $("#accountOwner, #carrierZone, #pickNumber, #orderNumber, #weightBand").val("");
         $("#result").val("All");
         $("#pageSize").val("10");
-        $("#unmatchedPageSize").val("10");
+        $("#cancelledPageSize, #unmatchedPageSize").val("10");
         sortColumn = "fechaEntrega";
         sortDirection = "desc";
         updateSortIcons();
         clearSearch("#productSearch", "#productSuggestions", "product");
         clearSearch("#accountSearch", "#accountSuggestions", "account");
         currentPage = 1;
+        cancelledPage = 1;
         unmatchedPage = 1;
         loadDashboard();
     });
@@ -69,6 +73,11 @@ $(function () {
     $("#pageSize").on("change", function () {
         currentPage = 1;
         loadDeliveries();
+    });
+
+    $("#cancelledPageSize").on("change", function () {
+        cancelledPage = 1;
+        loadDeliveries(false);
     });
 
     $("#unmatchedPageSize").on("change", function () {
@@ -358,6 +367,9 @@ function loadDeliveries(refreshChart) {
     const query = filterQuery();
     query.page = currentPage;
     query.pageSize = Number($("#pageSize").val()) || 10;
+    query.cancelledPage = cancelledPage;
+    query.cancelledPageSize = Number($("#cancelledPageSize").val()) || 10;
+    $("#cancelledBody").html('<tr><td colspan="14" class="text-muted">Loading…</td></tr>');
 
     $.ajax({
         url: URLBACKEND + "transport-performance/consult",
@@ -370,6 +382,7 @@ function loadDeliveries(refreshChart) {
                 renderChart(data.months || [], data.summary || {});
             }
             renderTable(data.rows || [], data.total || 0, query.pageSize);
+            renderCancelled(data.cancelledRows || [], data.cancelledTotal || 0, query.cancelledPageSize);
         })
         .fail(function () {
             if (refreshChart) {
@@ -379,6 +392,9 @@ function loadDeliveries(refreshChart) {
             $("#deliveriesBody").html('<tr><td colspan="14" class="text-danger">Deliveries could not be loaded.</td></tr>');
             $("#showingLabel").text("");
             $("#pager").empty();
+            $("#cancelledBody").html('<tr><td colspan="14" class="text-danger">Cancelled picks could not be loaded.</td></tr>');
+            $("#cancelledShowingLabel").text("");
+            $("#cancelledPager").empty();
             showPageAlert("The dashboard could not be loaded.");
         })
         .always(function () {
@@ -562,35 +578,7 @@ function renderTable(rows, total, pageSize) {
         body.append('<tr><td colspan="14" class="text-muted">No deliveries match these filters.</td></tr>');
     } else {
         rows.forEach(function (row) {
-            const result = row.result
-                ? '<span class="tp-pill ' + (row.result === "Late" ? "tp-pill-late" : "tp-pill-ontime") + '">'
-                    + escapeHtml(row.result) + "</span>"
-                : "";
-            const daysLate = row.daysLate === null || row.daysLate === undefined
-                ? ""
-                : escapeHtml(formatInteger(row.daysLate));
-            const pickWeight = row.pickWeightKg === null || row.pickWeightKg === undefined
-                ? ""
-                : escapeHtml(formatInteger(row.pickWeightKg));
-            const fechaClass = row.result === "Late" && !row.ncrOnly ? " tp-late-date" : "";
-            body.append(
-                "<tr>"
-                + cell(row.pickNumber)
-                + cell(row.orderNumber)
-                + '<td class="tp-col-product">' + escapeHtml(row.product) + "</td>"
-                + cell(row.accountName)
-                + cell(row.accountOwner)
-                + cell(formatDate(row.promisedDate))
-                + cell(formatDateTime(row.transmitDateTime))
-                + '<td class="tp-col-compact">' + escapeHtml(formatDate(row.earliestViableDate)) + "</td>"
-                + '<td class="tp-col-compact' + fechaClass + '">' + escapeHtml(formatDate(row.fechaEntrega)) + "</td>"
-                + '<td class="tp-col-tight">' + (row.timingNcr ? '<span class="tp-ncr-yes">Yes</span>' : "No") + "</td>"
-                + '<td class="tp-col-tight">' + daysLate + "</td>"
-                + '<td class="tp-col-compact">' + pickWeight + "</td>"
-                + "<td>" + result + "</td>"
-                + "<td class=\"tp-col-eye\">" + pickDetailsLink(row.pickNumber) + "</td>"
-                + "</tr>"
-            );
+            body.append(deliveryRow(row));
         });
     }
 
@@ -604,6 +592,89 @@ function renderTable(rows, total, pageSize) {
         );
     }
     renderPager(total, pageSize);
+}
+
+function renderCancelled(rows, total, pageSize) {
+    const body = $("#cancelledBody");
+    body.empty();
+    if (!rows.length) {
+        body.append('<tr><td colspan="14" class="text-muted">No picks with all cancelled lines match these filters.</td></tr>');
+    } else {
+        rows.forEach(function (row) {
+            body.append(deliveryRow(row));
+        });
+    }
+    if (total === 0) {
+        $("#cancelledShowingLabel").text("Showing 0 of 0");
+    } else {
+        const start = (cancelledPage - 1) * pageSize + 1;
+        const end = Math.min(cancelledPage * pageSize, total);
+        $("#cancelledShowingLabel").text(
+            "Showing " + formatInteger(start) + "-" + formatInteger(end) + " of " + formatInteger(total)
+        );
+    }
+    renderCancelledPager(total, pageSize);
+}
+
+function renderCancelledPager(total, pageSize) {
+    const pages = Math.max(1, Math.ceil(total / pageSize));
+    if (total > 0 && cancelledPage > pages) {
+        cancelledPage = pages;
+        loadDeliveries(false);
+        return;
+    }
+    const pager = $('<ul class="pagination pagination-sm mb-0"></ul>');
+    pager.append(pageItem("Previous", cancelledPage <= 1, function () {
+        cancelledPage -= 1;
+        loadDeliveries(false);
+    }));
+    const windowStart = Math.max(1, cancelledPage - 2);
+    const windowEnd = Math.min(pages, windowStart + 4);
+    for (let page = windowStart; page <= windowEnd; page++) {
+        const item = pageItem(String(page), false, function () {
+            cancelledPage = page;
+            loadDeliveries(false);
+        });
+        if (page === cancelledPage) {
+            item.addClass("active");
+        }
+        pager.append(item);
+    }
+    pager.append(pageItem("Next", cancelledPage >= pages || total === 0, function () {
+        cancelledPage += 1;
+        loadDeliveries(false);
+    }));
+    $("#cancelledPager").empty().append(pager);
+}
+
+function deliveryRow(row) {
+    const result = row.result
+        ? '<span class="tp-pill ' + (row.result === "Late" ? "tp-pill-late" : "tp-pill-ontime") + '">'
+            + escapeHtml(row.result) + "</span>"
+        : "";
+    const daysLate = row.daysLate === null || row.daysLate === undefined
+        ? ""
+        : escapeHtml(formatInteger(row.daysLate));
+    const pickWeight = row.pickWeightKg === null || row.pickWeightKg === undefined
+        ? ""
+        : escapeHtml(formatInteger(row.pickWeightKg));
+    const fechaClass = row.result === "Late" && !row.ncrOnly ? " tp-late-date" : "";
+    return "<tr>"
+        + cell(row.pickNumber)
+        + cell(row.orderNumber)
+        + '<td class="tp-col-product">' + escapeHtml(row.product) + "</td>"
+        + cell(row.accountName)
+        + cell(row.accountOwner)
+        + cell(formatDate(row.promisedDate))
+        + cell(formatDateTime(row.transmitDateTime))
+        + '<td class="tp-col-compact">' + escapeHtml(formatDate(row.earliestViableDate)) + "</td>"
+        + '<td class="tp-col-compact' + fechaClass + '">' + escapeHtml(formatDate(row.fechaEntrega)) + "</td>"
+        + '<td class="tp-col-tight">' + (row.timingNcr ? '<span class="tp-ncr-yes">Yes</span>' : "No") + "</td>"
+        + '<td class="tp-col-tight">' + daysLate + "</td>"
+        + '<td class="tp-col-compact">' + pickWeight + "</td>"
+        + "<td>" + result + "</td>"
+        + "<td class=\"tp-col-eye\">" + pickDetailsLink(row.pickNumber) + "</td>"
+        + "</tr>";
 }
 
 function renderPager(total, pageSize) {

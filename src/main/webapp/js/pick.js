@@ -113,14 +113,15 @@ function linesTable(rows) {
     if (!rows.length) {
         return '<div class="text-muted">No sales lines for this pick.</div>';
     }
-    return table(["Product", "Full Segments Number", "Order", "Promised", "Weight (kg)"], rows.map(function (row) {
+    return table(["Product", "Full Segments Number", "Order", "Promised", "Weight (kg)", "Income type"], rows.map(function (row) {
         const name = row.productName || "";
         return [
             name,
             row.segmentNumber,
             row.orderNumber,
             formatDate(row.promisedDate),
-            formatKg(row.quantityKg)
+            formatKg(row.quantityKg),
+            row.incomeType
         ];
     }));
 }

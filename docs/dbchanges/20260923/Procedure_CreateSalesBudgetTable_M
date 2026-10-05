@@ -33,9 +33,11 @@ Transport Performance dashboard reads:
     ACCOUNT_NAME, ACCOUNT_OWNER_NAME,
     SHIP_TO_COUNTRY_CODE, SHIP_TO_POSTAL_CODE,
     PRODUCT_NAME, PRODUCT_FULL_SEGMENTS_NUMBER,
-    QUANTITYKG.
+    INCOMETYPE, QUANTITYKG.
 QUANTITYKG is stored as an integer number of kilograms. A source value such as
 2250.000000000000 becomes 2250.
+INCOMETYPE is kept, including Cancelled, so the dashboard can separate a pick
+whose every sales line is Cancelled.
 
 TARGET TABLES:
 ----------------------------------------------------------------------------------------------
