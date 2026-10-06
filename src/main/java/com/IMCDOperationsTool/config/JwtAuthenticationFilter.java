@@ -1,6 +1,7 @@
 package com.IMCDOperationsTool.config;
 
 import com.IMCDOperationsTool.security.AuthenticationModeService;
+import com.IMCDOperationsTool.services.ActivityLogService;
 import com.IMCDOperationsTool.utils.JwtUtil;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
@@ -33,13 +34,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     private final Log logger = LogFactory.getLog(this.getClass());
     private final JwtUtil jwtUtil;
     private final AuthenticationModeService authenticationModeService;
+    private final ActivityLogService activityLogService;
 
     @Value("${commonsapp.url}")
     private String commonAppsUrl;
 
-    public JwtAuthenticationFilter(JwtUtil jwtUtil, AuthenticationModeService authenticationModeService) {
+    public JwtAuthenticationFilter(JwtUtil jwtUtil, AuthenticationModeService authenticationModeService,
+            ActivityLogService activityLogService) {
         this.jwtUtil = jwtUtil;
         this.authenticationModeService = authenticationModeService;
+        this.activityLogService = activityLogService;
     }
 
     @Override
@@ -77,8 +81,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         if (jwt == null) {
             if (StringUtils.hasText(containerUser)) {
-                setAuthenticatedUser(containerUser);
-                filterChain.doFilter(request, response);
+                continueAuthenticated(containerUser, "container:" + containerUser, request, response, filterChain);
                 return;
             }
             if ("/login.html".equals(path)) {
@@ -89,29 +92,35 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             return;
         }
 
+        String username;
+        String sessionKey;
         try {
             Claims claims = jwtUtil.getJwtClaims(jwt);
-            String username = claims.getSubject();
-
+            username = claims.getSubject();
+            sessionKey = jwt;
             if (!StringUtils.hasText(username)) {
                 handleUnauthenticated(response, context);
                 return;
             }
-
-            setAuthenticatedUser(username);
         } catch (Exception e) {
             if (StringUtils.hasText(containerUser)) {
                 logger.warn("JWT not available/invalid; falling back to container user " + containerUser);
-                setAuthenticatedUser(containerUser);
-                filterChain.doFilter(request, response);
+                username = containerUser;
+                sessionKey = "container:" + containerUser;
+            } else {
+                logger.error("Error validating JWT", e);
+                handleUnauthenticated(response, context);
                 return;
             }
-
-            logger.error("Error validating JWT", e);
-            handleUnauthenticated(response, context);
-            return;
         }
 
+        continueAuthenticated(username, sessionKey, request, response, filterChain);
+    }
+
+    private void continueAuthenticated(String username, String sessionKey, HttpServletRequest request,
+            HttpServletResponse response, FilterChain filterChain) throws ServletException, IOException {
+        setAuthenticatedUser(username);
+        activityLogService.logSafenetLogin(sessionKey);
         filterChain.doFilter(request, response);
     }
 

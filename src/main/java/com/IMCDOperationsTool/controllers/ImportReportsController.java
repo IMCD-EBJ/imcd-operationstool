@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.IMCDOperationsTool.services.ActivityLogService;
 import com.IMCDOperationsTool.services.FileService;
 import com.imcd.platformlib.excel.imports.ExcelImportException;
 import com.imcd.platformlib.excel.imports.ExcelImportRequest;
@@ -44,13 +45,16 @@ public class ImportReportsController {
     private final JdbcTemplate jdbcTemplate;
     private final ExcelImportService excelImportService;
     private final FileService fileService;
+    private final ActivityLogService activityLogService;
 
     public ImportReportsController(JdbcTemplate jdbcTemplate,
             ExcelImportService excelImportService,
-            FileService fileService) {
+            FileService fileService,
+            ActivityLogService activityLogService) {
         this.jdbcTemplate = jdbcTemplate;
         this.excelImportService = excelImportService;
         this.fileService = fileService;
+        this.activityLogService = activityLogService;
     }
 
     @GetMapping("getImportReportsCombo")
@@ -87,6 +91,7 @@ public class ImportReportsController {
                     new ExcelImportRequest(file.getInputStream(), file.getOriginalFilename(), reportId, userLogged));
             fileService.saveFile(result.tableName() + ".xlsx", file);
 
+            activityLogService.log(ActivityLogService.IMPORT_FILE, userLogged, null);
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("logImport", result.logImport());
             body.put("tableName", result.tableName());
@@ -177,6 +182,7 @@ public class ImportReportsController {
             } catch (Exception ignored) {
                 // The master-file directory is optional for this import.
             }
+            activityLogService.log(ActivityLogService.IMPORT_FILE, localAdUser, userName);
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("importId", loaded.get("importId"));
             body.put("rowCount", loaded.get("rowCount"));

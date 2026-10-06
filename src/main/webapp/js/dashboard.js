@@ -50,7 +50,7 @@ $(function () {
         currentPage = 1;
         cancelledPage = 1;
         unmatchedPage = 1;
-        loadDashboard();
+        loadDashboard(true);
     });
 
     $("#btnClear").on("click", function () {
@@ -348,7 +348,7 @@ function updateSortIcons() {
     });
 }
 
-function loadDashboard() {
+function loadDashboard(recordFilters) {
     const fromDate = $("#fromDate").val();
     const toDate = $("#toDate").val();
     if (fromDate && toDate && fromDate > toDate) {
@@ -356,15 +356,18 @@ function loadDashboard() {
         return;
     }
     clearPageAlert();
-    loadDeliveries(true);
+    loadDeliveries(true, !!recordFilters);
     loadUnmatched();
 }
 
-function loadDeliveries(refreshChart) {
+function loadDeliveries(refreshChart, recordFilters) {
     $("#btnApply").prop("disabled", true);
     $("#deliveriesBody").html('<tr><td colspan="14" class="text-muted">Loading…</td></tr>');
 
     const query = filterQuery();
+    if (recordFilters) {
+        query.recordFilters = true;
+    }
     query.page = currentPage;
     query.pageSize = Number($("#pageSize").val()) || 10;
     query.cancelledPage = cancelledPage;

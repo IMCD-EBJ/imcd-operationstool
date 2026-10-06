@@ -31,6 +31,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.IMCDOperationsTool.services.ActivityLogService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -60,10 +61,13 @@ public class TransportPerformanceController {
 
     private final JdbcTemplate jdbcTemplate;
     private final ExcelExportService excelExportService;
+    private final ActivityLogService activityLogService;
 
-    public TransportPerformanceController(JdbcTemplate jdbcTemplate, ExcelExportService excelExportService) {
+    public TransportPerformanceController(JdbcTemplate jdbcTemplate, ExcelExportService excelExportService,
+            ActivityLogService activityLogService) {
         this.jdbcTemplate = jdbcTemplate;
         this.excelExportService = excelExportService;
+        this.activityLogService = activityLogService;
     }
 
     @GetMapping("account-owners")
@@ -139,12 +143,18 @@ public class TransportPerformanceController {
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "10") int pageSize,
             @RequestParam(defaultValue = "1") int cancelledPage,
-            @RequestParam(defaultValue = "10") int cancelledPageSize) {
+            @RequestParam(defaultValue = "10") int cancelledPageSize,
+            @RequestParam(defaultValue = "false") boolean recordFilters) {
         try {
-            DashboardData data = load(fromDate, toDate, writeJson(readProducts(products)), null,
-                    accountOwner, writeJson(readAccounts(accounts)),
+            List<Map<String, String>> productItems = readProducts(products);
+            List<String> accountItems = readAccounts(accounts);
+            DashboardData data = load(fromDate, toDate, writeJson(productItems), null,
+                    accountOwner, writeJson(accountItems),
                     carrierZone, result, pickNumber, orderNumber, weightBand, sortColumn, sortDirection, page, pageSize,
                     cancelledPage, cancelledPageSize);
+            if (recordFilters) {
+                activityLogService.log(ActivityLogService.APPLY_FILTERS);
+            }
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("summary", data.summary);
             body.put("months", data.months);
@@ -212,6 +222,7 @@ public class TransportPerformanceController {
             ExcelExportResult file = excelExportService.export(workbook(
                     fromDate, toDate, productItems, accountOwner, accountItems, carrierZone, result,
                     pickNumber, orderNumber, weightBand, data));
+            activityLogService.log(ActivityLogService.EXPORT_DATA);
             return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.fileName() + "\"")
                     .contentType(MediaType.parseMediaType(file.contentType()))
