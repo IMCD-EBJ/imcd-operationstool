@@ -71,6 +71,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         String context = request.getContextPath();
         String path = getRequestPath(request);
 
+        if ("/login.html".equals(path) && !authenticationModeService.isLocalLoginEnabled()) {
+            response.sendRedirect(hasProductionIdentity(request)
+                    ? context + "/dashboard.html"
+                    : commonAppsUrl);
+            return;
+        }
+
         if (isLocalOnlyPath(path) && !authenticationModeService.isLocalLoginEnabled()) {
             response.sendError(HttpServletResponse.SC_NOT_FOUND);
             return;
@@ -143,6 +150,22 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         }
 
         response.sendRedirect(commonAppsUrl);
+    }
+
+    private boolean hasProductionIdentity(HttpServletRequest request) {
+        if (StringUtils.hasText(resolveContainerUser(request))) {
+            return true;
+        }
+        String jwt = jwtUtil.getJwtFromCookie(request);
+        if (!StringUtils.hasText(jwt)) {
+            return false;
+        }
+        try {
+            return StringUtils.hasText(jwtUtil.getJwtClaims(jwt).getSubject());
+        } catch (Exception e) {
+            logger.warn("Ignoring JWT while leaving the local login page");
+            return false;
+        }
     }
 
     private String resolveContainerUser(HttpServletRequest request) {

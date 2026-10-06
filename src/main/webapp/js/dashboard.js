@@ -1,8 +1,3 @@
-const session = JSON.parse(localStorage.getItem("operationstoolusuario") || "null");
-if (!session) {
-    window.location.href = "login.html";
-}
-
 let currentPage = 1;
 let cancelledPage = 1;
 let unmatchedPage = 1;

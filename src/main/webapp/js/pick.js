@@ -1,8 +1,3 @@
-const session = JSON.parse(localStorage.getItem("operationstoolusuario") || "null");
-if (!session) {
-    window.location.href = "login.html";
-}
-
 $(function () {
     loadOperationsChrome();
     const pick = pickFromPath();

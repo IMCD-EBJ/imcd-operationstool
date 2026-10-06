@@ -2,6 +2,63 @@ const APP_NAME = "operationstool";
 const APP_URL = "/" + APP_NAME;
 const URLBACKEND = APP_URL + "/";
 
+function readStoredJson(key) {
+    try {
+        return JSON.parse(localStorage.getItem(key) || "null");
+    } catch (e) {
+        return null;
+    }
+}
+
+function sessionFromCommonApps(commonUser) {
+    if (!commonUser || typeof commonUser !== "object") {
+        return null;
+    }
+    const localAd = commonUser.UCA_LocalADUser || commonUser.UCA_Id || "";
+    const userName = commonUser.UCA_UserName || localAd;
+    const mail = commonUser.UCA_Mail || commonUser.UCA_User || "";
+    if (!localAd && !userName && !mail) {
+        return null;
+    }
+    const profiles = [];
+    if (Array.isArray(commonUser.Profiles)) {
+        commonUser.Profiles.forEach(function (profile) {
+            if (profile && profiles.indexOf(profile) < 0) {
+                profiles.push(profile);
+            }
+        });
+    }
+    if (commonUser.UCA_TipoUserId && profiles.indexOf(commonUser.UCA_TipoUserId) < 0) {
+        profiles.push(commonUser.UCA_TipoUserId);
+    }
+    return {
+        CFG_SendEmail: false,
+        UOT_Id: userName || localAd,
+        UOT_UserName: userName || localAd,
+        UOT_LocalADUser: localAd || userName,
+        UOT_Mail: mail,
+        Profiles: profiles
+    };
+}
+
+function ensureOperationsSession() {
+    const existing = readStoredJson(APP_NAME + "usuario");
+    if (existing) {
+        return existing;
+    }
+    const session = sessionFromCommonApps(readStoredJson("commonAppsusuario"));
+    if (!session) {
+        return null;
+    }
+    localStorage.setItem(APP_NAME + "usuario", JSON.stringify(session));
+    if (!localStorage.getItem(APP_NAME + "usuarioOriginal")) {
+        localStorage.setItem(APP_NAME + "usuarioOriginal", JSON.stringify(session));
+    }
+    return session;
+}
+
+ensureOperationsSession();
+
 function loadOperationsChrome() {
     $("#section_sidebar").load(APP_URL + "/components/menu.html", function () {
         if (window.initSidebarBehavior) window.initSidebarBehavior();
@@ -12,12 +69,8 @@ function loadOperationsChrome() {
 }
 
 function operationsMenuUserId() {
-    try {
-        const session = JSON.parse(localStorage.getItem(APP_NAME + "usuario") || "null");
-        return session && session.UOT_LocalADUser ? session.UOT_LocalADUser : "";
-    } catch (e) {
-        return "";
-    }
+    const session = ensureOperationsSession();
+    return session && session.UOT_LocalADUser ? session.UOT_LocalADUser : "";
 }
 
 async function initOperationsMenu() {

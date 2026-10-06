@@ -1,5 +1,6 @@
 package com.IMCDOperationsTool.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
@@ -11,18 +12,27 @@ import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
+import com.IMCDOperationsTool.security.AuthenticationModeService;
+
 /**
  * Spring Security configuration copied from Price Tool.
- * {@code /login.html}, {@code /login_dev}, and {@code /ping_dev} are permitted.
+ * Local login is available only on the {@code loc} profile. Production sends
+ * anonymous browsers to CommonApps, where SafeNet signs them in.
  */
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final AuthenticationModeService authenticationModeService;
+    private final String commonAppsUrl;
 
-    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
+    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter,
+            AuthenticationModeService authenticationModeService,
+            @Value("${commonsapp.url}") String commonAppsUrl) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+        this.authenticationModeService = authenticationModeService;
+        this.commonAppsUrl = commonAppsUrl;
     }
 
     @Bean
@@ -38,9 +48,11 @@ public class SecurityConfig {
                 response.setStatus(401);
                 response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                 response.getWriter().write("{\"error\":\"Unauthorized\"}");
-            } else {
+            } else if (authenticationModeService.isLocalLoginEnabled()) {
                 response.sendRedirect(response.encodeRedirectURL(
                         request.getContextPath() + "/login.html"));
+            } else {
+                response.sendRedirect(commonAppsUrl);
             }
         };
 

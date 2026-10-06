@@ -83,10 +83,7 @@
     <script src="js/core/theme.min.js"></script>
     <script src="js/shell.js"></script>
     <script>
-        const session = JSON.parse(localStorage.getItem("operationstoolusuario") || "null");
-        if (!session) {
-            window.location.href = "login.html";
-        }
+        const session = (typeof ensureOperationsSession === "function" ? ensureOperationsSession() : null) || {};
 
         const REQUIRED_COLUMNS = [
             { label: "Carrier Code", type: "Text" },
