@@ -80,6 +80,11 @@ public class TransportPerformanceController {
         return stringList("{call dbo.TransportPerformance_Zones_Consult()}", "CarrierZone");
     }
 
+    @GetMapping("file-identifiers")
+    public ResponseEntity<Object> fileIdentifiers() {
+        return stringList("{call dbo.TransportPerformance_FileIdentifiers_Consult()}", "FileIdentifier");
+    }
+
     @GetMapping("products")
     public ResponseEntity<Object> products(@RequestParam(defaultValue = "") String term) {
         if (term == null || term.trim().length() < 2) {
@@ -138,6 +143,7 @@ public class TransportPerformanceController {
             @RequestParam(required = false) String pickNumber,
             @RequestParam(required = false) String orderNumber,
             @RequestParam(required = false) String weightBand,
+            @RequestParam(required = false) String files,
             @RequestParam(required = false) String sortColumn,
             @RequestParam(required = false) String sortDirection,
             @RequestParam(defaultValue = "1") int page,
@@ -148,10 +154,11 @@ public class TransportPerformanceController {
         try {
             List<Map<String, String>> productItems = readProducts(products);
             List<String> accountItems = readAccounts(accounts);
+            List<String> fileItems = readAccounts(files);
             DashboardData data = load(fromDate, toDate, writeJson(productItems), null,
                     accountOwner, writeJson(accountItems),
                     carrierZone, result, pickNumber, orderNumber, weightBand, sortColumn, sortDirection, page, pageSize,
-                    cancelledPage, cancelledPageSize);
+                    cancelledPage, cancelledPageSize, writeJson(fileItems));
             if (recordFilters) {
                 activityLogService.log(ActivityLogService.APPLY_FILTERS);
             }
@@ -174,10 +181,13 @@ public class TransportPerformanceController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
             @RequestParam(required = false) String pickNumber,
+            @RequestParam(required = false) String files,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "10") int pageSize) {
         try {
-            return new ResponseEntity<>(loadUnmatched(fromDate, toDate, pickNumber, page, pageSize), HttpStatus.OK);
+            return new ResponseEntity<>(
+                    loadUnmatched(fromDate, toDate, pickNumber, writeJson(readAccounts(files)), page, pageSize),
+                    HttpStatus.OK);
         } catch (RuntimeException e) {
             LOG.error("Transport performance unmatched consult failed", e);
             return new ResponseEntity<>("Database connection error", HttpStatus.INTERNAL_SERVER_ERROR);
@@ -210,18 +220,20 @@ public class TransportPerformanceController {
             @RequestParam(required = false) String pickNumber,
             @RequestParam(required = false) String orderNumber,
             @RequestParam(required = false) String weightBand,
+            @RequestParam(required = false) String files,
             @RequestParam(required = false) String sortColumn,
             @RequestParam(required = false) String sortDirection) {
         try {
             List<Map<String, String>> productItems = readProducts(products);
             List<String> accountItems = readAccounts(accounts);
+            List<String> fileItems = readAccounts(files);
             DashboardData data = load(fromDate, toDate, writeJson(productItems), null,
                     accountOwner, writeJson(accountItems),
                     carrierZone, result, pickNumber, orderNumber, weightBand, sortColumn, sortDirection, 1, 0,
-                    1, 10);
+                    1, 10, writeJson(fileItems));
             ExcelExportResult file = excelExportService.export(workbook(
                     fromDate, toDate, productItems, accountOwner, accountItems, carrierZone, result,
-                    pickNumber, orderNumber, weightBand, data));
+                    pickNumber, orderNumber, weightBand, fileItems, data));
             activityLogService.log(ActivityLogService.EXPORT_DATA);
             return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + file.fileName() + "\"")
@@ -255,10 +267,10 @@ public class TransportPerformanceController {
     private DashboardData load(LocalDate fromDate, LocalDate toDate, String productName, String productSegment,
             String accountOwner, String accountName, String carrierZone, String result,
             String pickNumber, String orderNumber, String weightBand, String sortColumn, String sortDirection,
-            int page, int pageSize, int cancelledPage, int cancelledPageSize) {
+            int page, int pageSize, int cancelledPage, int cancelledPageSize, String fileIdentifiers) {
         return jdbcTemplate.execute((ConnectionCallback<DashboardData>) connection -> {
             try (CallableStatement cs = connection.prepareCall(
-                    "{call dbo.TransportPerformance_Consult(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)}")) {
+                    "{call dbo.TransportPerformance_Consult(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)}")) {
                 setDate(cs, 1, fromDate);
                 setDate(cs, 2, toDate);
                 setString(cs, 3, productName);
@@ -276,6 +288,7 @@ public class TransportPerformanceController {
                 setString(cs, 15, weightBand(weightBand));
                 cs.setInt(16, Math.max(cancelledPage, 1));
                 cs.setInt(17, Math.max(cancelledPageSize, 0));
+                setString(cs, 18, fileIdentifiers);
 
                 DashboardData data = new DashboardData();
                 boolean hasResults = cs.execute();
@@ -324,15 +337,16 @@ public class TransportPerformanceController {
     }
 
     private Map<String, Object> loadUnmatched(LocalDate fromDate, LocalDate toDate, String pickNumber,
-            int page, int pageSize) {
+            String fileIdentifiers, int page, int pageSize) {
         return jdbcTemplate.execute((ConnectionCallback<Map<String, Object>>) connection -> {
             try (CallableStatement cs = connection.prepareCall(
-                    "{call dbo.TransportPerformance_Unmatched_Consult(?,?,?,?,?)}")) {
+                    "{call dbo.TransportPerformance_Unmatched_Consult(?,?,?,?,?,?)}")) {
                 setDate(cs, 1, fromDate);
                 setDate(cs, 2, toDate);
                 cs.setInt(3, Math.max(page, 1));
                 cs.setInt(4, Math.max(pageSize, 0));
                 setString(cs, 5, pickNumber);
+                setString(cs, 6, fileIdentifiers);
 
                 int total = 0;
                 List<Map<String, Object>> rows = new ArrayList<>();
@@ -422,7 +436,7 @@ public class TransportPerformanceController {
     private ExcelExportRequest workbook(LocalDate fromDate, LocalDate toDate, List<Map<String, String>> products,
             String accountOwner, List<String> accountName,
             String carrierZone, String result, String pickNumber, String orderNumber, String weightBand,
-            DashboardData data) {
+            List<String> fileIdentifiers, DashboardData data) {
         List<ExcelLabelValue> metadata = new ArrayList<>();
         metadata.add(new ExcelLabelValue("From promised date", fromDate == null ? "" : DAY.format(fromDate)));
         metadata.add(new ExcelLabelValue("To promised date", toDate == null ? "" : DAY.format(toDate)));
@@ -434,6 +448,7 @@ public class TransportPerformanceController {
         metadata.add(new ExcelLabelValue("Pick number", blankToAll(pickNumber)));
         metadata.add(new ExcelLabelValue("Order", blankToAll(orderNumber)));
         metadata.add(new ExcelLabelValue("Pick weight", weightLabel(weightBand)));
+        metadata.add(new ExcelLabelValue("Import files", joinLabels(fileIdentifiers)));
         metadata.add(new ExcelLabelValue("Total deliveries", data.summary.get("totalCount"), ExcelColumnType.INTEGER));
         metadata.add(new ExcelLabelValue("On time %", data.summary.get("onTimePercent"), ExcelColumnType.DECIMAL));
         metadata.add(new ExcelLabelValue("Late %", data.summary.get("latePercent"), ExcelColumnType.DECIMAL));

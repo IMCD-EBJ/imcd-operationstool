@@ -7,7 +7,7 @@ The app is a Spring Boot WAR served at `/operationstool`. Pages live in `src/mai
 ## Features
 
 - **Carrier import** (`import.html`). Upload an Excel file for a branch plant. The first row must be the header, and columns must appear in this order: Carrier Code, Pick Number, Status, SKU, Delivery Date, Client, Address, Locality, Postal Code, Country.
-- **Transport Performance Dashboard** (`dashboard.html`). Filter deliveries by promised-date range, account owner, carrier zone, result, pick, order, product, and account. The page shows on-time and late KPIs, a monthly trend, and a paginated delivery list. Results can be exported to Excel.
+- **Transport Performance Dashboard** (`dashboard.html`). Filter deliveries by promised-date range, account owner, carrier zone, result, pick, order, product, account, and import file identifier. Each pick still uses its latest import. Several file identifiers can be selected, and a pick stays only when that latest import came from one of them. The page shows on-time and late KPIs, a monthly trend, and a paginated delivery list. Results can be exported to Excel.
 - **Pick details** (`/pick/{pick}/details`). Opens the pick header, order lines, carrier rows, EDI records, and related cases.
 
 Matching, dates, and KPIs are calculated in SQL Server by `dbo.TransportPerformance_Consult` and the related consult procedures.
@@ -116,6 +116,7 @@ Base path: `/operationstool`.
 | `GET` | `/transport-performance/zones` | Carrier zone list |
 | `GET` | `/transport-performance/products?term=` | Product search (at least 2 characters) |
 | `GET` | `/transport-performance/accounts?term=` | Account search (at least 2 characters) |
+| `GET` | `/transport-performance/file-identifiers` | Import file identifiers for the dashboard filter |
 
 ## Database
 
@@ -128,6 +129,7 @@ The application calls stored procedures in `OPERATIONSTOOL`. The main ones are:
 - `dbo.TransportPerformance_Zones_Consult`
 - `dbo.TransportPerformance_Product_Search`
 - `dbo.TransportPerformance_Account_Search`
+- `dbo.TransportPerformance_FileIdentifiers_Consult`
 - `dbo.CarrierImport_Report_Consult`
 - `dbo.Carrier_Imported_Data_Load`
 - `dbo.Import_Reports_Consult`

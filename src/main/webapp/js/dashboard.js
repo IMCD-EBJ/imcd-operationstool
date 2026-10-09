@@ -6,6 +6,9 @@ let sortDirection = "desc";
 let onTimeChart = null;
 let selectedProducts = [];
 let selectedAccounts = [];
+let selectedFiles = [];
+let fileIdentifiers = [];
+let fileIdentifiersLoaded = false;
 let productSearchTimer = null;
 let accountSearchTimer = null;
 
@@ -59,6 +62,7 @@ $(function () {
         updateSortIcons();
         clearSearch("#productSearch", "#productSuggestions", "product");
         clearSearch("#accountSearch", "#accountSuggestions", "account");
+        clearFiles();
         currentPage = 1;
         cancelledPage = 1;
         unmatchedPage = 1;
@@ -84,10 +88,14 @@ $(function () {
 
     bindSearch("#productSearch", "#productSuggestions", "product");
     bindSearch("#accountSearch", "#accountSuggestions", "account");
+    bindFilePicker();
 
     $(document).on("click", function (event) {
         if (!$(event.target).closest(".tp-search").length) {
             $(".tp-suggestions").attr("hidden", true);
+        }
+        if (!$(event.target).closest(".tp-file-menu").length) {
+            closeFileMenu();
         }
     });
 });
@@ -134,6 +142,9 @@ function filterQuery() {
     if (selectedAccounts.length) {
         query.accounts = JSON.stringify(selectedAccounts);
     }
+    if (selectedFiles.length) {
+        query.files = JSON.stringify(selectedFiles);
+    }
     return query;
 }
 
@@ -152,6 +163,19 @@ function loadFilters() {
         })
         .fail(function () {
             showPageAlert("Postal codes could not be loaded.");
+        });
+
+    $.get(URLBACKEND + "transport-performance/file-identifiers")
+        .done(function (files) {
+            fileIdentifiers = files || [];
+            fileIdentifiersLoaded = true;
+            renderFileMenu();
+        })
+        .fail(function () {
+            fileIdentifiers = [];
+            fileIdentifiersLoaded = true;
+            renderFileMenu();
+            showPageAlert("Import files could not be loaded.");
         });
 }
 
@@ -317,6 +341,73 @@ function clearSearch(inputSelector, listSelector, kind) {
     renderChips(kind);
 }
 
+function bindFilePicker() {
+    $("#fileMenuButton").on("click", function () {
+        if ($("#fileMenu").is("[hidden]")) {
+            $("#fileMenu").removeAttr("hidden");
+            $(this).attr("aria-expanded", "true");
+        } else {
+            closeFileMenu();
+        }
+    });
+
+    $("#fileMenuButton").on("keydown", function (event) {
+        if (event.key === "Escape") {
+            closeFileMenu();
+        }
+    });
+}
+
+function renderFileMenu() {
+    const list = $("#fileMenu");
+    list.empty();
+    if (!fileIdentifiers.length) {
+        list.append('<div class="tp-file-empty">'
+            + (fileIdentifiersLoaded ? "No import files" : "Loading import files…")
+            + "</div>");
+        updateFileMenuLabel();
+        return;
+    }
+    fileIdentifiers.forEach(function (identifier) {
+        const option = $('<label class="tp-file-option"></label>');
+        const box = $('<input type="checkbox">').val(identifier);
+        box.prop("checked", selectedFiles.indexOf(identifier) !== -1);
+        box.on("change", function () {
+            if (this.checked) {
+                if (selectedFiles.indexOf(identifier) === -1) {
+                    selectedFiles.push(identifier);
+                }
+            } else {
+                selectedFiles = selectedFiles.filter(function (item) {
+                    return item !== identifier;
+                });
+            }
+            updateFileMenuLabel();
+        });
+        option.append(box, $("<span></span>").text(identifier));
+        list.append(option);
+    });
+    updateFileMenuLabel();
+}
+
+function updateFileMenuLabel() {
+    const text = selectedFiles.length ? selectedFiles.join(", ") : "All import files";
+    $("#fileMenuLabel").text(text);
+    $("#fileMenuButton").attr("title", text);
+}
+
+function closeFileMenu() {
+    $("#fileMenu").attr("hidden", true);
+    $("#fileMenuButton").attr("aria-expanded", "false");
+}
+
+function clearFiles() {
+    selectedFiles = [];
+    $("#fileMenu input[type=checkbox]").prop("checked", false);
+    updateFileMenuLabel();
+    closeFileMenu();
+}
+
 function fillSelect(selector, placeholder, values) {
     const select = $(selector);
     const current = select.val();
@@ -403,10 +494,12 @@ function loadDeliveries(refreshChart, recordFilters) {
 function loadUnmatched() {
     $("#unmatchedBody").html('<tr><td colspan="7" class="text-muted">Loading…</td></tr>');
     const pageSize = Number($("#unmatchedPageSize").val()) || 10;
+    const query = filterQuery();
     $.get(URLBACKEND + "transport-performance/unmatched", {
-        fromDate: $("#fromDate").val(),
-        toDate: $("#toDate").val(),
-        pickNumber: $("#pickNumber").val(),
+        fromDate: query.fromDate,
+        toDate: query.toDate,
+        pickNumber: query.pickNumber,
+        files: query.files,
         page: unmatchedPage,
         pageSize: pageSize
     })

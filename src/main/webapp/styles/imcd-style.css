@@ -3169,6 +3169,87 @@ textarea.form-control.obligatorio.error {
   flex: 1.35 1 0;
 }
 
+.tp-filter-row > .tp-files {
+  z-index: 40;
+}
+
+.tp-file-menu {
+  position: relative;
+}
+
+button.tp-file-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 30px;
+  padding-top: 0;
+  padding-bottom: 0;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.2;
+  color: inherit;
+  background: #fff;
+  cursor: pointer;
+}
+
+.tp-file-toggle span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp-file-toggle .fa-caret-down {
+  flex: 0 0 auto;
+  margin-left: .45rem;
+  color: #6c757d;
+  font-size: .85rem;
+}
+
+.tp-file-panel {
+  position: absolute;
+  z-index: 40;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  max-height: 240px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid var(--imcd-border);
+  border-radius: 8px;
+  box-shadow: var(--imcd-shadow);
+  padding: .2rem 0;
+}
+
+.tp-file-option {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin: 0;
+  padding: .35rem .65rem;
+  font-size: 12px;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.tp-file-option:hover {
+  background: var(--imcd-brand-100);
+}
+
+.tp-file-option input {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.tp-file-empty {
+  padding: .4rem .65rem;
+  color: var(--imcd-muted);
+  font-size: 12px;
+}
+
+.tp-filter-actions-row {
+  justify-content: flex-end;
+}
+
 .tp-filter-row > .tp-filter-actions {
   flex: 0 0 auto;
 }

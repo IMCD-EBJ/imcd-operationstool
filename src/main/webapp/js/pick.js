@@ -86,7 +86,7 @@ function timingTable(header) {
     return '<p class="text-muted small mb-3">Late when Fecha Entrega is after the retained date, or a Delivery Timing case exists.</p>'
         + '<div class="tp-dates">'
         + dateTile("Promised date", formatDate(header.promisedDate), "Date promised to the customer")
-        + dateTile("Transmit (EDI)", formatDateTime(header.transmitDateTime), "Earliest inbound message")
+        + dateTile("Transmit (EDI)", formatDateTime(header.transmitDateTime), "Earliest outbound message")
         + dateTile("Effective Warehouse arrival", formatDate(header.warehouseArrival), "After 13:30 this rolls to the next working day")
         + dateTile("Earliest viable", formatDate(header.earliestViableDate), "Arrival plus transit days")
         + dateTile("Retained date", formatDate(header.comparisonDate), "Later of promised and earliest viable", "tp-date-key")
